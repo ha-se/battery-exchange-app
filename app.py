@@ -387,7 +387,7 @@ def main():
     st.title("🔋 バッテリー交換実績集計アプリ")
     st.markdown("---")
     
-    # サイドバー：ファイル選択とSnowflake設定
+    # サイドバー：ファイル選択
     with st.sidebar:
         st.header("⚙️ 設定")
         
@@ -397,17 +397,6 @@ def main():
             type=['xlsx', 'xls'],
             help="バッテリー交換実績データのExcelファイルをアップロードしてください"
         )
-        
-        st.markdown("---")
-        st.subheader("Snowflake接続設定")
-        
-        sf_account = st.text_input("Account", help="例: abc12345.ap-northeast-1.aws")
-        sf_user = st.text_input("User")
-        sf_password = st.text_input("Password", type="password")
-        sf_warehouse = st.text_input("Warehouse", value="COMPUTE_WH")
-        sf_database = st.text_input("Database")
-        sf_schema = st.text_input("Schema", value="PUBLIC")
-        sf_table = st.text_input("Table Name", value="BATTERY_EXCHANGE_SUMMARY")
     
     # メインエリア
     if uploaded_file is not None:
@@ -679,12 +668,12 @@ def main():
                                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                             )
                 
-                # Snowflakeアップロード
-                st.markdown("---")
-                st.header("☁️ Snowflakeへのアップロード")
+                # Snowflakeアップロード機能は削除されました
+                # st.markdown("---")
+                # st.header("☁️ Snowflakeへのアップロード")
                 
-                # アップロードモード選択
-                upload_mode = st.radio(
+                if False:  # Snowflake機能は無効化されています
+                    upload_mode = st.radio(
                     "アップロードモードを選択",
                     options=["🔍 集計済みデータ", "📊 生データ（推奨）", "🔄 両方"],
                     help="""
@@ -892,22 +881,8 @@ def main():
         # ファイルが選択されていない場合
         st.info("👈 サイドバーからExcelファイルをアップロードしてください")
         
-        # デフォルトファイルの読み込みオプション
-        default_file = "バッテリー交換_全国_先月.xlsx"
-        if st.button(f"📂 デフォルトファイル ({default_file}) を使用"):
-            try:
-                with st.spinner("📂 ファイルを読み込み中..."):
-                    df = load_excel_data(default_file)
-                if df is not None:
-                    st.session_state['df'] = df
-                    st.session_state['default_file_loaded'] = True
-                    st.success(f"✅ ファイル読み込み完了: {len(df):,}行のデータ")
-                    st.rerun()
-            except Exception as e:
-                st.error(f"❌ デフォルトファイルの読み込みに失敗しました: {e}")
-        
-        # デフォルトファイルが読み込まれている場合の処理
-        if 'default_file_loaded' in st.session_state and st.session_state['default_file_loaded']:
+        # (デフォルトファイル機能は削除されました)
+        if False:  # この処理は使用されません
             df = st.session_state['df']
             
             st.success(f"✅ ファイル読み込み完了: {len(df):,}行のデータ")
@@ -1176,12 +1151,12 @@ def main():
                                 key="download_all_default_with_raw"
                             )
                 
-                # Snowflakeアップロード
-                st.markdown("---")
-                st.header("☁️ Snowflakeへのアップロード")
+                # Snowflakeアップロード機能は削除されました
+                # st.markdown("---")
+                # st.header("☁️ Snowflakeへのアップロード")
                 
-                # アップロードモード選択
-                upload_mode_default = st.radio(
+                if False:  # Snowflake機能は無効化されています
+                    upload_mode_default = st.radio(
                     "アップロードモードを選択",
                     options=["🔍 集計済みデータ", "📊 生データ（推奨）", "🔄 両方"],
                     help="""
