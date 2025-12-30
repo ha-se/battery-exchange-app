@@ -194,6 +194,10 @@ def main():
             type=['xlsx', 'xls'],
             help="バッテリー交換実績データのExcelファイルをアップロードしてください"
         )
+        
+        # バージョン情報（デバッグ用）
+        st.markdown("---")
+        st.caption("Version: 2025-12-30-v2 (Snowflake削除済み)")
     
     # メインエリア
     if uploaded_file is not None:
