@@ -17,8 +17,9 @@ st.set_page_config(
     layout="wide"
 )
 
-# 認証機能（パブリックデプロイ時のみ有効化）
-ENABLE_AUTH = os.getenv("ENABLE_AUTH", "false").lower() == "true"
+# 認証機能（パブリックデプロイ時は常に有効）
+# ローカル開発時のみ無効化する場合は環境変数 DISABLE_AUTH=true を設定
+ENABLE_AUTH = os.getenv("DISABLE_AUTH", "false").lower() != "true"
 
 if ENABLE_AUTH:
     from auth import check_password, logout, get_authenticated_user
