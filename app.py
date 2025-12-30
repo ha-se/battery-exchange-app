@@ -22,17 +22,26 @@ st.set_page_config(
 ENABLE_AUTH = os.getenv("DISABLE_AUTH", "false").lower() != "true"
 
 if ENABLE_AUTH:
-    from auth import check_password, logout, get_authenticated_user
-    
-    if not check_password():
+    try:
+        from auth import check_password, logout, get_authenticated_user
+        
+        if not check_password():
+            st.stop()
+        
+        # ログアウトボタンをサイドバーに追加
+        with st.sidebar:
+            st.markdown("---")
+            st.markdown(f"👤 ログイン中: **{get_authenticated_user()}**")
+            if st.button("🚪 ログアウト"):
+                logout()
+    except Exception as e:
+        st.error(f"🔐 認証モジュールのエラー: {e}")
+        st.error("Secretsに [passwords] セクションが設定されているか確認してください")
+        st.code("""
+[passwords]
+admin = "パスワードハッシュ値"
+        """)
         st.stop()
-    
-    # ログアウトボタンをサイドバーに追加
-    with st.sidebar:
-        st.markdown("---")
-        st.markdown(f"👤 ログイン中: **{get_authenticated_user()}**")
-        if st.button("🚪 ログアウト"):
-            logout()
 
 @st.cache_data(show_spinner=False)
 def load_excel_data(file_path: str) -> pd.DataFrame:
