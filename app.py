@@ -78,45 +78,42 @@ def detect_duplicates(df: pd.DataFrame) -> pd.DataFrame:
     df['is_duplicate'] = False
     
     # do_date列をdatetime型に変換
-    if 'do_date' in df.columns:
-        df['do_date'] = pd.to_datetime(df['do_date'], errors='coerce')
-    else:
-        st.warning("⚠️ 'do_date'列が見つかりません。重複検出をスキップします。")
+    if 'do_date' not in df.columns:
         return df
     
     # code列の存在確認
     if 'code' not in df.columns:
-        st.warning("⚠️ 'code'列が見つかりません。重複検出をスキップします。")
         return df
     
-    # 車両番号が空でないレコードのみ処理
-    df_with_code = df[df['code'].notna()].copy()
+    # do_date列をdatetime型に変換（エラーは無視）
+    df['do_date'] = pd.to_datetime(df['do_date'], errors='coerce')
     
-    if len(df_with_code) == 0:
+    # 車両番号が空でない、かつ日時が有効なレコードのみ処理
+    valid_mask = df['code'].notna() & df['do_date'].notna()
+    
+    if not valid_mask.any():
         return df
     
     # 車両番号と日時でソート
-    df_with_code = df_with_code.sort_values(['code', 'do_date'])
+    df_sorted = df.sort_values(['code', 'do_date'])
     
-    # 各車両番号について、前のレコードとの時間差をチェック
-    duplicate_indices = []
+    # 前のレコードとの差分を計算（ベクトル化）
+    df_sorted['prev_code'] = df_sorted['code'].shift(1)
+    df_sorted['prev_date'] = df_sorted['do_date'].shift(1)
     
-    for code in df_with_code['code'].unique():
-        code_records = df_with_code[df_with_code['code'] == code].copy()
-        
-        if len(code_records) < 2:
-            continue
-        
-        # 前のレコードとの時間差を計算
-        code_records['time_diff'] = code_records['do_date'].diff()
-        
-        # 1時間以内の場合は重複とみなす
-        for idx, row in code_records.iterrows():
-            if pd.notna(row['time_diff']) and row['time_diff'] <= pd.Timedelta(hours=1):
-                duplicate_indices.append(idx)
+    # 同じ車両番号で、前のレコードとの時間差が1時間以内の場合は重複
+    df_sorted['time_diff'] = df_sorted['do_date'] - df_sorted['prev_date']
+    df_sorted['is_duplicate'] = (
+        (df_sorted['code'] == df_sorted['prev_code']) & 
+        (df_sorted['time_diff'] <= pd.Timedelta(hours=1))
+    )
     
-    # 重複フラグを設定
-    df.loc[duplicate_indices, 'is_duplicate'] = True
+    # 元のインデックス順に戻す
+    df.loc[df_sorted.index, 'is_duplicate'] = df_sorted['is_duplicate']
+    
+    # 一時列を削除
+    if 'prev_code' in df.columns:
+        df = df.drop(columns=['prev_code', 'prev_date', 'time_diff'], errors='ignore')
     
     return df
 
@@ -155,7 +152,6 @@ def check_battery_standard(row):
     else:
         return None
 
-@st.cache_data(show_spinner=False)
 def aggregate_by_company_and_maker(df: pd.DataFrame) -> Dict[str, pd.DataFrame]:
     """
     PT企業毎に、user_nameと自転車メーカー別の集計を行う
@@ -274,7 +270,7 @@ def main():
         
         # バージョン情報（デバッグ用）
         st.markdown("---")
-        st.caption("Version: 2025-12-30-v3 (重複除外機能追加)")
+        st.caption("Version: 2025-12-30-v4 (重複検出を最適化)")
     
     # メインエリア
     if uploaded_file is not None:
@@ -296,16 +292,16 @@ def main():
                 
                 try:
                     status_text.text("📊 データを分析中...")
-                    progress_bar.progress(20, text="PT企業を特定中...")
+                    progress_bar.progress(10, text="重複データを検出中...")
                     
                     # PT企業のリストを取得
                     companies = df['user_company(所属)'].dropna().unique()
                     total_companies = len(companies)
                     
-                    status_text.text(f"📊 {total_companies}社のデータを集計中...")
-                    progress_bar.progress(40, text=f"{total_companies}社の集計を実行中...")
+                    status_text.text(f"🔍 重複データを検出中...（{len(df):,}行）")
+                    progress_bar.progress(30, text="重複チェック実行中...")
                     
-                    # 集計実行
+                    # 集計実行（重複検出を含む）
                     aggregated_data = aggregate_by_company_and_maker(df)
                     
                     progress_bar.progress(90, text="集計結果を準備中...")
