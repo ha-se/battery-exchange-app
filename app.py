@@ -62,6 +62,64 @@ def load_excel_from_uploaded_file(uploaded_file) -> pd.DataFrame:
         st.error(f"ファイル読み込みエラー: {e}")
         return None
 
+def detect_duplicates(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    前後1時間で同じ車両番号（code）のレコードを重複として検出
+    
+    Args:
+        df: 元データ（do_date列とcode列が必要）
+    
+    Returns:
+        重複フラグ列（is_duplicate）を追加したDataFrame
+    """
+    df = df.copy()
+    
+    # 重複フラグを初期化
+    df['is_duplicate'] = False
+    
+    # do_date列をdatetime型に変換
+    if 'do_date' in df.columns:
+        df['do_date'] = pd.to_datetime(df['do_date'], errors='coerce')
+    else:
+        st.warning("⚠️ 'do_date'列が見つかりません。重複検出をスキップします。")
+        return df
+    
+    # code列の存在確認
+    if 'code' not in df.columns:
+        st.warning("⚠️ 'code'列が見つかりません。重複検出をスキップします。")
+        return df
+    
+    # 車両番号が空でないレコードのみ処理
+    df_with_code = df[df['code'].notna()].copy()
+    
+    if len(df_with_code) == 0:
+        return df
+    
+    # 車両番号と日時でソート
+    df_with_code = df_with_code.sort_values(['code', 'do_date'])
+    
+    # 各車両番号について、前のレコードとの時間差をチェック
+    duplicate_indices = []
+    
+    for code in df_with_code['code'].unique():
+        code_records = df_with_code[df_with_code['code'] == code].copy()
+        
+        if len(code_records) < 2:
+            continue
+        
+        # 前のレコードとの時間差を計算
+        code_records['time_diff'] = code_records['do_date'].diff()
+        
+        # 1時間以内の場合は重複とみなす
+        for idx, row in code_records.iterrows():
+            if pd.notna(row['time_diff']) and row['time_diff'] <= pd.Timedelta(hours=1):
+                duplicate_indices.append(idx)
+    
+    # 重複フラグを設定
+    df.loc[duplicate_indices, 'is_duplicate'] = True
+    
+    return df
+
 def check_battery_standard(row):
     """
     バッテリー残量が基準外かどうかを判定
@@ -101,7 +159,7 @@ def check_battery_standard(row):
 def aggregate_by_company_and_maker(df: pd.DataFrame) -> Dict[str, pd.DataFrame]:
     """
     PT企業毎に、user_nameと自転車メーカー別の集計を行う
-    基準内/基準外も含めて集計
+    基準内/基準外、重複除外も含めて集計
     
     Returns:
         Dict[str, pd.DataFrame]: PT企業名をキー、集計結果DataFrameを値とする辞書
@@ -110,8 +168,10 @@ def aggregate_by_company_and_maker(df: pd.DataFrame) -> Dict[str, pd.DataFrame]:
     user_col = 'user_name'
     maker_col = '自転車メーカー名'
     
+    # 重複検出を実行
+    df_with_standard = detect_duplicates(df)
+    
     # 基準判定列を追加
-    df_with_standard = df.copy()
     df_with_standard['基準判定'] = df_with_standard.apply(check_battery_standard, axis=1)
     
     # PT企業毎に集計
@@ -131,12 +191,21 @@ def aggregate_by_company_and_maker(df: pd.DataFrame) -> Dict[str, pd.DataFrame]:
             user_df = company_df[company_df[user_col] == user]
             row_data = {'user_name': user}
             
+            # 重複を除外したデータ
+            user_df_no_dup = user_df[user_df['is_duplicate'] == False]
+            # 重複データ
+            user_df_dup = user_df[user_df['is_duplicate'] == True]
+            
             # 各メーカーについて、基準内/基準外を集計
             makers = ['Panasonic', 'YAMAHA', 'DBS', 'glafit', 'シナネンサイクル', 'KUROAD']
             total = 0
+            total_duplicates = 0
             
             for maker in makers:
-                maker_df = user_df[user_df[maker_col] == maker]
+                # 重複除外データで集計
+                maker_df = user_df_no_dup[user_df_no_dup[maker_col] == maker]
+                # 重複データの件数
+                maker_dup_count = len(user_df_dup[user_df_dup[maker_col] == maker])
                 
                 # 基準内の件数
                 kijun_nai = len(maker_df[maker_df['基準判定'] == '基準内'])
@@ -148,10 +217,13 @@ def aggregate_by_company_and_maker(df: pd.DataFrame) -> Dict[str, pd.DataFrame]:
                 row_data[f'{maker}_基準内'] = kijun_nai
                 row_data[f'{maker}_基準外'] = kijun_gai
                 row_data[f'{maker}_合計'] = maker_total
+                row_data[f'{maker}_重複除外数'] = maker_dup_count
                 
                 total += maker_total
+                total_duplicates += maker_dup_count
             
             row_data['総合計'] = total
+            row_data['総重複除外数'] = total_duplicates
             result_data.append(row_data)
         
         # DataFrameに変換
@@ -169,8 +241,13 @@ def aggregate_by_company_and_maker(df: pd.DataFrame) -> Dict[str, pd.DataFrame]:
         ordered_columns = ['user_name']
         for maker in makers:
             if f'{maker}_基準内' in result_df.columns:
-                ordered_columns.extend([f'{maker}_基準内', f'{maker}_基準外', f'{maker}_合計'])
-        ordered_columns.append('総合計')
+                ordered_columns.extend([
+                    f'{maker}_基準内', 
+                    f'{maker}_基準外', 
+                    f'{maker}_合計',
+                    f'{maker}_重複除外数'
+                ])
+        ordered_columns.extend(['総合計', '総重複除外数'])
         
         # 存在する列のみを選択
         existing_columns = [col for col in ordered_columns if col in result_df.columns]
@@ -197,7 +274,7 @@ def main():
         
         # バージョン情報（デバッグ用）
         st.markdown("---")
-        st.caption("Version: 2025-12-30-v2 (Snowflake削除済み)")
+        st.caption("Version: 2025-12-30-v3 (重複除外機能追加)")
     
     # メインエリア
     if uploaded_file is not None:
@@ -271,6 +348,25 @@ def main():
                 
                     with tab1:
                         st.subheader(f"{selected_company} の集計結果")
+                        
+                        # 重複除外の統計情報を表示
+                        if '総重複除外数' in company_data.columns:
+                            total_row = company_data[company_data['user_name'] == '合計']
+                            if len(total_row) > 0:
+                                total_exchanges = int(total_row['総合計'].values[0])
+                                total_duplicates = int(total_row['総重複除外数'].values[0])
+                                total_with_duplicates = total_exchanges + total_duplicates
+                                
+                                st.info(f"""
+                                📊 **データ統計**
+                                - 総交換件数（重複除外後）: **{total_exchanges:,}件**
+                                - 重複除外数: **{total_duplicates:,}件**
+                                - 元データ件数: **{total_with_duplicates:,}件**
+                                - 重複率: **{(total_duplicates / total_with_duplicates * 100):.2f}%**
+                                
+                                💡 前後1時間以内に同じ車両番号（code）で記録された交換は重複としてカウントされています。
+                                """)
+                        
                         st.dataframe(
                             company_data,
                             use_container_width=True,
