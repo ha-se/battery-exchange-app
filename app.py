@@ -270,7 +270,7 @@ def main():
         
         # バージョン情報（デバッグ用）
         st.markdown("---")
-        st.caption("Version: 2025-12-30-v5 (Excel出力を高速化)")
+        st.caption("Version: 2025-12-30-v6 (Excel出力最適化:一時列削除)")
     
     # メインエリア
     if uploaded_file is not None:
@@ -490,7 +490,7 @@ def main():
                         if st.button("📦 Excelファイルを準備", key="prepare_single_excel"):
                             with st.spinner("Excelファイルを作成中..."):
                                 output = io.BytesIO()
-                                with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                                with pd.ExcelWriter(output, engine='openpyxl') as writer:
                                     # シート1: 集計結果
                                     company_data.to_excel(writer, sheet_name='集計結果', index=False)
                                 
@@ -538,7 +538,7 @@ def main():
                             if download_option == "集計結果のみ":
                                 with st.spinner(f"全{len(aggregated_data)}社の集計結果をExcelに出力中..."):
                                     output_all = io.BytesIO()
-                                    with pd.ExcelWriter(output_all, engine='xlsxwriter') as writer:
+                                    with pd.ExcelWriter(output_all, engine='openpyxl') as writer:
                                         for company, data in aggregated_data.items():
                                             # シート名は最大31文字
                                             sheet_name = company[:31]
@@ -558,7 +558,7 @@ def main():
                                     temp_cols = ['is_duplicate', '基準判定', 'prev_code', 'prev_date', 'time_diff']
                                     df_clean = df_clean.drop(columns=[col for col in temp_cols if col in df_clean.columns], errors='ignore')
                                     
-                                    with pd.ExcelWriter(output_all, engine='xlsxwriter') as writer:
+                                    with pd.ExcelWriter(output_all, engine='openpyxl') as writer:
                                         progress_bar = st.progress(0)
                                         total = len(aggregated_data)
                                         
