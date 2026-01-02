@@ -8,6 +8,7 @@ import plotly.express as px
 from typing import Dict, List
 import io
 import os
+import zipfile
 
 try:
     import snowflake.connector
@@ -362,7 +363,7 @@ def main():
         
         # バージョン情報（デバッグ用）
         st.markdown("---")
-        st.caption("Version: 2025-12-30-v9 (集計ロジック説明追加)")
+        st.caption("Version: 2025-12-30-v10 (全企業ダウンロード改善:統合Excel+ZIP)")
     
     # メインエリア
     if uploaded_file is not None:
@@ -651,49 +652,72 @@ def main():
                         if st.button("📦 全企業のExcelファイルを準備", key="prepare_all_excel"):
                             if download_option == "集計結果のみ":
                                 with st.spinner(f"全{len(aggregated_data)}社の集計結果をExcelに出力中..."):
+                                    # 全企業の集計結果を1つのシートに統合
+                                    all_companies_data = []
+                                    
+                                    for company, data in aggregated_data.items():
+                                        # 各企業のデータに企業名列を追加
+                                        company_with_name = data.copy()
+                                        company_with_name.insert(0, 'PT企業名', company)
+                                        all_companies_data.append(company_with_name)
+                                    
+                                    # 全企業のデータを結合
+                                    combined_df = pd.concat(all_companies_data, ignore_index=True)
+                                    
+                                    # Excelに出力
                                     output_all = io.BytesIO()
                                     with pd.ExcelWriter(output_all, engine='openpyxl') as writer:
-                                        for company, data in aggregated_data.items():
-                                            # シート名は最大31文字
-                                            sheet_name = company[:31]
-                                            data.to_excel(writer, sheet_name=sheet_name, index=False)
+                                        combined_df.to_excel(writer, sheet_name='全PT企業集計', index=False)
                                     output_all.seek(0)
+                                    
                                     st.session_state['all_excel_data'] = output_all.getvalue()
                                     st.session_state['all_excel_filename'] = "全PT企業_集計結果.xlsx"
-                                    st.success("✅ Excelファイルの準備完了！")
+                                    st.session_state['all_excel_mime'] = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                                    st.success(f"✅ Excelファイルの準備完了！（全{len(aggregated_data)}社、{len(combined_df):,}行）")
                             else:
                                 st.warning("⚠️ 生データを含むため、ファイルサイズが大きくなります")
                                 
-                                with st.spinner(f"全{len(aggregated_data)}社の集計結果と生データをExcelに出力中..."):
-                                    output_all = io.BytesIO()
+                                with st.spinner(f"全{len(aggregated_data)}社のExcelファイルをZIP化中..."):
+                                    # ZIPファイルを作成
+                                    zip_buffer = io.BytesIO()
                                     
                                     # 生データから一時列を削除
                                     df_clean = df.copy()
                                     temp_cols = ['is_duplicate', '基準判定', 'prev_code', 'prev_date', 'time_diff']
                                     df_clean = df_clean.drop(columns=[col for col in temp_cols if col in df_clean.columns], errors='ignore')
                                     
-                                    with pd.ExcelWriter(output_all, engine='openpyxl') as writer:
+                                    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
                                         progress_bar = st.progress(0)
                                         total = len(aggregated_data)
                                         
                                         for idx, (company, data) in enumerate(aggregated_data.items()):
-                                            # 集計結果シート
-                                            sheet_name = company[:28] + "_集計"
-                                            data.to_excel(writer, sheet_name=sheet_name, index=False)
-                                        
-                                            # 生データシート
-                                            company_raw = df_clean[df_clean['user_company(所属)'] == company].copy()
-                                            sheet_name_raw = company[:28] + "_生"
-                                            company_raw.to_excel(writer, sheet_name=sheet_name_raw, index=False)
+                                            # 各企業ごとに1つのExcelファイルを作成
+                                            excel_buffer = io.BytesIO()
+                                            
+                                            with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
+                                                # 集計結果シート
+                                                data.to_excel(writer, sheet_name='集計結果', index=False)
+                                                
+                                                # 生データシート
+                                                company_raw = df_clean[df_clean['user_company(所属)'] == company].copy()
+                                                company_raw.to_excel(writer, sheet_name='生データ', index=False)
+                                            
+                                            # ZIPに追加（ファイル名をクリーンアップ）
+                                            safe_company_name = company.replace('/', '_').replace('\\', '_')
+                                            zip_file.writestr(
+                                                f"{safe_company_name}_集計結果_生データ.xlsx",
+                                                excel_buffer.getvalue()
+                                            )
                                             
                                             progress_bar.progress((idx + 1) / total)
                                         
                                         progress_bar.empty()
                                     
-                                    output_all.seek(0)
-                                    st.session_state['all_excel_data'] = output_all.getvalue()
-                                    st.session_state['all_excel_filename'] = "全PT企業_集計結果_生データ.xlsx"
-                                    st.success("✅ Excelファイルの準備完了！")
+                                    zip_buffer.seek(0)
+                                    st.session_state['all_excel_data'] = zip_buffer.getvalue()
+                                    st.session_state['all_excel_filename'] = "全PT企業_集計結果_生データ.zip"
+                                    st.session_state['all_excel_mime'] = "application/zip"
+                                    st.success(f"✅ ZIPファイルの準備完了！（全{len(aggregated_data)}社のExcelファイル）")
                         
                         # ダウンロードボタンを表示
                         if 'all_excel_data' in st.session_state:
@@ -701,7 +725,7 @@ def main():
                                 label=f"📥 {st.session_state['all_excel_filename']} をダウンロード",
                                 data=st.session_state['all_excel_data'],
                                 file_name=st.session_state['all_excel_filename'],
-                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                mime=st.session_state.get('all_excel_mime', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'),
                                 key="download_all_excel"
                             )
             
