@@ -9,6 +9,13 @@ from typing import Dict, List
 import io
 import os
 
+try:
+    import snowflake.connector
+    from snowflake.connector.pandas_tools import write_pandas
+    SNOWFLAKE_AVAILABLE = True
+except ImportError:
+    SNOWFLAKE_AVAILABLE = False
+
 # ページ設定
 st.set_page_config(
     page_title="バッテリー交換実績集計",
@@ -112,6 +119,58 @@ def detect_duplicates(df: pd.DataFrame) -> pd.DataFrame:
     df.loc[df_sorted.index, 'is_duplicate'] = df_sorted['is_duplicate']
     
     return df
+
+def upload_to_snowflake(df: pd.DataFrame, connection_params: dict, table_name: str) -> bool:
+    """
+    DataFrameをSnowflakeにアップロード
+    
+    Args:
+        df: アップロードするDataFrame
+        connection_params: Snowflake接続パラメータ
+        table_name: テーブル名
+    
+    Returns:
+        成功したかどうか
+    """
+    if not SNOWFLAKE_AVAILABLE:
+        st.error("❌ Snowflakeモジュールがインストールされていません")
+        return False
+    
+    try:
+        # Snowflakeに接続
+        conn = snowflake.connector.connect(**connection_params)
+        
+        # カラム名をSnowflake用にクリーニング
+        df_clean = df.copy()
+        df_clean.columns = [
+            col.replace(' ', '_')
+               .replace('(', '_')
+               .replace(')', '_')
+               .replace('-', '_')
+               .replace('.', '_')
+            for col in df_clean.columns
+        ]
+        
+        # 一時列を削除
+        temp_cols = ['is_duplicate', '基準判定', 'prev_code', 'prev_date', 'time_diff']
+        df_clean = df_clean.drop(columns=[col for col in temp_cols if col in df_clean.columns], errors='ignore')
+        
+        # write_pandasを使用して高速アップロード
+        success, nchunks, nrows, _ = write_pandas(
+            conn=conn,
+            df=df_clean,
+            table_name=table_name.upper(),
+            auto_create_table=True,
+            overwrite=True,
+            quote_identifiers=False
+        )
+        
+        conn.close()
+        return success
+        
+    except Exception as e:
+        st.error(f"❌ Snowflakeアップロードエラー: {e}")
+        return False
 
 def check_battery_standard(row):
     """
@@ -264,9 +323,43 @@ def main():
             help="バッテリー交換実績データのExcelファイルをアップロードしてください"
         )
         
+        # Snowflake設定
+        if SNOWFLAKE_AVAILABLE:
+            st.markdown("---")
+            with st.expander("☁️ Snowflake自動転送設定", expanded=False):
+                st.markdown("ファイルアップロード時に自動的にSnowflakeへ転送します")
+                
+                enable_snowflake = st.checkbox("Snowflake自動転送を有効化", value=False)
+                
+                if enable_snowflake:
+                    sf_account = st.text_input("Account", help="例: abc12345.ap-northeast-1.aws")
+                    sf_user = st.text_input("User")
+                    sf_password = st.text_input("Password", type="password")
+                    sf_warehouse = st.text_input("Warehouse", value="COMPUTE_WH")
+                    sf_database = st.text_input("Database")
+                    sf_schema = st.text_input("Schema", value="PUBLIC")
+                    sf_table = st.text_input("Table Name", value="BATTERY_EXCHANGE_RAW")
+                    
+                    # 接続パラメータを保存
+                    if all([sf_account, sf_user, sf_password, sf_warehouse, sf_database, sf_schema, sf_table]):
+                        st.session_state['snowflake_params'] = {
+                            'account': sf_account,
+                            'user': sf_user,
+                            'password': sf_password,
+                            'warehouse': sf_warehouse,
+                            'database': sf_database,
+                            'schema': sf_schema
+                        }
+                        st.session_state['snowflake_table'] = sf_table
+                        st.session_state['snowflake_enabled'] = True
+                    else:
+                        st.session_state['snowflake_enabled'] = False
+                else:
+                    st.session_state['snowflake_enabled'] = False
+        
         # バージョン情報（デバッグ用）
         st.markdown("---")
-        st.caption("Version: 2025-12-30-v7 (重複検出バグ修正)")
+        st.caption("Version: 2025-12-30-v8 (Snowflake自動転送)")
     
     # メインエリア
     if uploaded_file is not None:
@@ -276,6 +369,25 @@ def main():
         
         if df is not None:
             st.success(f"✅ ファイル読み込み完了: {len(df):,}行のデータ")
+            
+            # Snowflakeへの自動転送
+            if st.session_state.get('snowflake_enabled', False):
+                if 'snowflake_uploaded' not in st.session_state or st.session_state.get('current_file') != uploaded_file.name:
+                    with st.spinner("☁️ Snowflakeへデータを転送中..."):
+                        success = upload_to_snowflake(
+                            df,
+                            st.session_state['snowflake_params'],
+                            st.session_state['snowflake_table']
+                        )
+                        
+                        if success:
+                            st.success(f"✅ Snowflakeへのアップロード完了: {st.session_state['snowflake_table']}")
+                            st.session_state['snowflake_uploaded'] = True
+                            st.session_state['current_file'] = uploaded_file.name
+                        else:
+                            st.error("❌ Snowflakeへのアップロードに失敗しました")
+                else:
+                    st.info(f"ℹ️ このファイルは既にSnowflakeにアップロード済みです（テーブル: {st.session_state['snowflake_table']}）")
                 
             # データプレビュー
             with st.expander("📊 データプレビュー（最初の10行）"):
