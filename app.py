@@ -270,7 +270,7 @@ def main():
         
         # バージョン情報（デバッグ用）
         st.markdown("---")
-        st.caption("Version: 2025-12-30-v4 (重複検出を最適化)")
+        st.caption("Version: 2025-12-30-v5 (Excel出力を高速化)")
     
     # メインエリア
     if uploaded_file is not None:
@@ -487,28 +487,40 @@ def main():
                         st.info("💡 集計結果と生データの両方が含まれたExcelファイルをダウンロードできます")
                     
                         # 選択した企業のデータをExcel出力（集計結果 + 生データ）
-                        output = io.BytesIO()
-                        with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                            # シート1: 集計結果
-                            company_data.to_excel(writer, sheet_name='集計結果', index=False)
+                        if st.button("📦 Excelファイルを準備", key="prepare_single_excel"):
+                            with st.spinner("Excelファイルを作成中..."):
+                                output = io.BytesIO()
+                                with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                                    # シート1: 集計結果
+                                    company_data.to_excel(writer, sheet_name='集計結果', index=False)
+                                
+                                    # シート2: 生データ（該当企業のみ、一時列を除外）
+                                    company_raw_data = df[df['user_company(所属)'] == selected_company].copy()
+                                    # 一時列を削除
+                                    temp_cols = ['is_duplicate', '基準判定', 'prev_code', 'prev_date', 'time_diff']
+                                    company_raw_data = company_raw_data.drop(columns=[col for col in temp_cols if col in company_raw_data.columns], errors='ignore')
+                                    company_raw_data.to_excel(writer, sheet_name='生データ', index=False)
+                                output.seek(0)
+                            
+                                st.session_state['single_excel_data'] = output.getvalue()
+                                st.success("✅ Excelファイルの準備完了！")
                         
-                            # シート2: 生データ（該当企業のみ）
-                            company_raw_data = df[df['user_company(所属)'] == selected_company].copy()
-                            company_raw_data.to_excel(writer, sheet_name='生データ', index=False)
-                        output.seek(0)
-                    
-                        st.download_button(
-                            label=f"📥 {selected_company} のデータをダウンロード（集計+生データ）",
-                            data=output,
-                            file_name=f"{selected_company}_集計結果_生データ.xlsx",
-                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                        )
+                        # ダウンロードボタンを表示
+                        if 'single_excel_data' in st.session_state:
+                            st.download_button(
+                                label=f"📥 {selected_company} のデータをダウンロード（集計+生データ）",
+                                data=st.session_state['single_excel_data'],
+                                file_name=f"{selected_company}_集計結果_生データ.xlsx",
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                            )
                     
                         # データサマリーを表示
+                        st.markdown("---")
                         col1, col2 = st.columns(2)
                         with col1:
                             st.metric("集計結果の行数", f"{len(company_data):,}行")
                         with col2:
+                            company_raw_data = df[df['user_company(所属)'] == selected_company]
                             st.metric("生データの行数", f"{len(company_raw_data):,}行")
                     
                         # 全企業のデータを1つのExcelファイルに出力
@@ -522,42 +534,61 @@ def main():
                             key="download_all_option"
                         )
                     
-                        if download_option == "集計結果のみ":
-                            output_all = io.BytesIO()
-                            with pd.ExcelWriter(output_all, engine='openpyxl') as writer:
-                                for company, data in aggregated_data.items():
-                                    # シート名は最大31文字
-                                    sheet_name = company[:31]
-                                    data.to_excel(writer, sheet_name=sheet_name, index=False)
-                            output_all.seek(0)
-                        
-                            st.download_button(
-                                label="📥 全PT企業のデータをダウンロード（集計のみ）",
-                                data=output_all,
-                                file_name="全PT企業_集計結果.xlsx",
-                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                            )
-                        else:
-                            st.warning("⚠️ 生データを含むため、ファイルサイズが大きくなります")
-                        
-                            output_all = io.BytesIO()
-                            with pd.ExcelWriter(output_all, engine='openpyxl') as writer:
-                                for company, data in aggregated_data.items():
-                                    # 集計結果シート
-                                    sheet_name = company[:28] + "_集計"
-                                    data.to_excel(writer, sheet_name=sheet_name, index=False)
+                        if st.button("📦 全企業のExcelファイルを準備", key="prepare_all_excel"):
+                            if download_option == "集計結果のみ":
+                                with st.spinner(f"全{len(aggregated_data)}社の集計結果をExcelに出力中..."):
+                                    output_all = io.BytesIO()
+                                    with pd.ExcelWriter(output_all, engine='xlsxwriter') as writer:
+                                        for company, data in aggregated_data.items():
+                                            # シート名は最大31文字
+                                            sheet_name = company[:31]
+                                            data.to_excel(writer, sheet_name=sheet_name, index=False)
+                                    output_all.seek(0)
+                                    st.session_state['all_excel_data'] = output_all.getvalue()
+                                    st.session_state['all_excel_filename'] = "全PT企業_集計結果.xlsx"
+                                    st.success("✅ Excelファイルの準備完了！")
+                            else:
+                                st.warning("⚠️ 生データを含むため、ファイルサイズが大きくなります")
                                 
-                                    # 生データシート
-                                    company_raw = df[df['user_company(所属)'] == company].copy()
-                                    sheet_name_raw = company[:28] + "_生"
-                                    company_raw.to_excel(writer, sheet_name=sheet_name_raw, index=False)
-                            output_all.seek(0)
+                                with st.spinner(f"全{len(aggregated_data)}社の集計結果と生データをExcelに出力中..."):
+                                    output_all = io.BytesIO()
+                                    
+                                    # 生データから一時列を削除
+                                    df_clean = df.copy()
+                                    temp_cols = ['is_duplicate', '基準判定', 'prev_code', 'prev_date', 'time_diff']
+                                    df_clean = df_clean.drop(columns=[col for col in temp_cols if col in df_clean.columns], errors='ignore')
+                                    
+                                    with pd.ExcelWriter(output_all, engine='xlsxwriter') as writer:
+                                        progress_bar = st.progress(0)
+                                        total = len(aggregated_data)
+                                        
+                                        for idx, (company, data) in enumerate(aggregated_data.items()):
+                                            # 集計結果シート
+                                            sheet_name = company[:28] + "_集計"
+                                            data.to_excel(writer, sheet_name=sheet_name, index=False)
+                                        
+                                            # 生データシート
+                                            company_raw = df_clean[df_clean['user_company(所属)'] == company].copy()
+                                            sheet_name_raw = company[:28] + "_生"
+                                            company_raw.to_excel(writer, sheet_name=sheet_name_raw, index=False)
+                                            
+                                            progress_bar.progress((idx + 1) / total)
+                                        
+                                        progress_bar.empty()
+                                    
+                                    output_all.seek(0)
+                                    st.session_state['all_excel_data'] = output_all.getvalue()
+                                    st.session_state['all_excel_filename'] = "全PT企業_集計結果_生データ.xlsx"
+                                    st.success("✅ Excelファイルの準備完了！")
                         
+                        # ダウンロードボタンを表示
+                        if 'all_excel_data' in st.session_state:
                             st.download_button(
-                                label="📥 全PT企業のデータをダウンロード（集計+生データ）",
-                                data=output_all,
-                                file_name="全PT企業_集計結果_生データ.xlsx",
-                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                                label=f"📥 {st.session_state['all_excel_filename']} をダウンロード",
+                                data=st.session_state['all_excel_data'],
+                                file_name=st.session_state['all_excel_filename'],
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                key="download_all_excel"
                             )
             
     else:
