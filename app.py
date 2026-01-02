@@ -111,10 +111,6 @@ def detect_duplicates(df: pd.DataFrame) -> pd.DataFrame:
     # 元のインデックス順に戻す
     df.loc[df_sorted.index, 'is_duplicate'] = df_sorted['is_duplicate']
     
-    # 一時列を削除
-    if 'prev_code' in df.columns:
-        df = df.drop(columns=['prev_code', 'prev_date', 'time_diff'], errors='ignore')
-    
     return df
 
 def check_battery_standard(row):
@@ -270,7 +266,7 @@ def main():
         
         # バージョン情報（デバッグ用）
         st.markdown("---")
-        st.caption("Version: 2025-12-30-v6 (Excel出力最適化:一時列削除)")
+        st.caption("Version: 2025-12-30-v7 (重複検出バグ修正)")
     
     # メインエリア
     if uploaded_file is not None:
