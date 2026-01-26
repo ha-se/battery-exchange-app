@@ -5,7 +5,7 @@ PT企業(user_company)毎に、user_nameと自転車メーカー別の集計を�
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-from typing import Dict, List
+from typing import Dict, List, Tuple
 import io
 import os
 import zipfile
@@ -65,6 +65,11 @@ def load_excel_from_uploaded_file(uploaded_file) -> pd.DataFrame:
     """アップロードされたファイルを読み込む"""
     try:
         df = pd.read_excel(uploaded_file)
+        # E列（インデックス4）とV列（インデックス21）の列名を保存
+        if len(df.columns) > 4:
+            df.attrs['e_column_name'] = df.columns[4]  # E列
+        if len(df.columns) > 21:
+            df.attrs['v_column_name'] = df.columns[21]  # V列（user_company(所属)）
         return df
     except Exception as e:
         st.error(f"ファイル読み込みエラー: {e}")
@@ -173,6 +178,53 @@ def upload_to_snowflake(df: pd.DataFrame, connection_params: dict, table_name: s
         st.error(f"❌ Snowflakeアップロードエラー: {e}")
         return False
 
+def is_self_exchange(df: pd.DataFrame, row_index: int) -> bool:
+    """
+    E列とV列を参照して、自社交換分かどうかを判定
+    
+    Args:
+        df: DataFrame（E列とV列の列名がattrsに保存されている）
+        row_index: 判定する行のインデックス
+    
+    Returns:
+        bool: 自社交換分の場合True
+    """
+    # E列とV列の列名を取得
+    e_col_name = df.attrs.get('e_column_name', None)
+    v_col_name = df.attrs.get('v_column_name', 'user_company(所属)')
+    
+    if e_col_name is None or e_col_name not in df.columns:
+        return False
+    
+    # 自社交換分の組み合わせ定義
+    self_exchange_mapping = {
+        'トヨタモビリティ東京株式会社': 'TMT',
+        '江ノ島電鉄株式会社': '江ノ電',
+        'モビリティプラットフォーム株式会社': 'MPF',
+        '東急バス株式会社': '東急バス'
+    }
+    
+    # 対象PT企業のリスト
+    target_pt_companies = ['TMT', '江ノ電', 'MPF', '東急バス']
+    
+    # 行のデータを取得
+    row = df.iloc[row_index]
+    e_value = row.get(e_col_name, None)
+    v_value = row.get(v_col_name, None)
+    
+    # E列とV列の値が自社交換分の組み合わせかチェック
+    if pd.notna(e_value) and pd.notna(v_value):
+        e_str = str(e_value).strip()
+        v_str = str(v_value).strip()
+        
+        # PT企業が対象企業で、かつE列とV列の組み合わせが自社交換分の場合
+        if v_str in target_pt_companies:
+            if e_str in self_exchange_mapping:
+                if self_exchange_mapping[e_str] == v_str:
+                    return True
+    
+    return False
+
 def check_battery_standard(row):
     """
     バッテリー残量が基準外かどうかを判定
@@ -208,13 +260,16 @@ def check_battery_standard(row):
     else:
         return None
 
-def aggregate_by_company_and_maker(df: pd.DataFrame) -> Dict[str, pd.DataFrame]:
+def aggregate_by_company_and_maker(df: pd.DataFrame) -> Tuple[Dict[str, pd.DataFrame], pd.DataFrame]:
     """
     PT企業毎に、user_nameと自転車メーカー別の集計を行う
     基準内/基準外、重複除外も含めて集計
+    自社交換分（E列とV列の特定組み合わせ）は除外し、別途返す
     
     Returns:
-        Dict[str, pd.DataFrame]: PT企業名をキー、集計結果DataFrameを値とする辞書
+        tuple: (集計結果Dict, 自社交換分DataFrame)
+            - 集計結果Dict: PT企業名をキー、集計結果DataFrameを値とする辞書
+            - 自社交換分DataFrame: 自社交換分のレコード
     """
     company_col = 'user_company(所属)'
     user_col = 'user_name'
@@ -223,17 +278,54 @@ def aggregate_by_company_and_maker(df: pd.DataFrame) -> Dict[str, pd.DataFrame]:
     # 重複検出を実行
     df_with_standard = detect_duplicates(df)
     
+    # attrsを継承（E列とV列の列名情報）
+    if hasattr(df, 'attrs'):
+        df_with_standard.attrs.update(df.attrs)
+    
     # 基準判定列を追加
     df_with_standard['基準判定'] = df_with_standard.apply(check_battery_standard, axis=1)
     
-    # PT企業毎に集計
+    # 自社交換分を判定（is_self_exchange列を追加）
+    # より効率的にベクトル化して処理
+    df_with_standard['is_self_exchange'] = False
+    
+    # E列とV列の列名を取得
+    e_col_name = df_with_standard.attrs.get('e_column_name', None)
+    v_col_name = df_with_standard.attrs.get('v_column_name', 'user_company(所属)')
+    
+    if e_col_name and e_col_name in df_with_standard.columns:
+        # 自社交換分の組み合わせ定義
+        self_exchange_mapping = {
+            'トヨタモビリティ東京株式会社': 'TMT',
+            '江ノ島電鉄株式会社': '江ノ電',
+            'モビリティプラットフォーム株式会社': 'MPF',
+            '東急バス株式会社': '東急バス'
+        }
+        
+        # 対象PT企業のリスト
+        target_pt_companies = ['TMT', '江ノ電', 'MPF', '東急バス']
+        
+        # ベクトル化して判定
+        e_values = df_with_standard[e_col_name].astype(str).str.strip()
+        v_values = df_with_standard[v_col_name].astype(str).str.strip()
+        
+        # 条件: V列が対象PT企業で、かつE列とV列の組み合わせが自社交換分
+        mask = v_values.isin(target_pt_companies) & e_values.isin(self_exchange_mapping.keys())
+        for e_str, v_expected in self_exchange_mapping.items():
+            df_with_standard.loc[mask & (e_values == e_str) & (v_values == v_expected), 'is_self_exchange'] = True
+    
+    # 自社交換分を分離
+    self_exchange_df = df_with_standard[df_with_standard['is_self_exchange'] == True].copy()
+    df_for_aggregation = df_with_standard[df_with_standard['is_self_exchange'] == False].copy()
+    
+    # PT企業毎に集計（自社交換分を除外したデータで集計）
     aggregated_data = {}
     
-    companies = df[company_col].dropna().unique()
+    companies = df_for_aggregation[company_col].dropna().unique()
     
     for i, company in enumerate(companies):
-        # 該当企業のデータを抽出
-        company_df = df_with_standard[df_with_standard[company_col] == company]
+        # 該当企業のデータを抽出（自社交換分を除外）
+        company_df = df_for_aggregation[df_for_aggregation[company_col] == company]
         
         # 各メーカーの結果を格納する辞書
         result_data = []
@@ -310,7 +402,7 @@ def aggregate_by_company_and_maker(df: pd.DataFrame) -> Dict[str, pd.DataFrame]:
         
         aggregated_data[company] = result_df
     
-    return aggregated_data
+    return aggregated_data, self_exchange_df
 
 def main():
     st.title("🔋 バッテリー交換実績集計アプリ")
@@ -413,17 +505,22 @@ def main():
                     status_text.text(f"🔍 重複データを検出中...（{len(df):,}行）")
                     progress_bar.progress(30, text="重複チェック実行中...")
                     
-                    # 集計実行（重複検出を含む）
-                    aggregated_data = aggregate_by_company_and_maker(df)
+                    # 集計実行（重複検出を含む、自社交換分を除外）
+                    aggregated_data, self_exchange_df = aggregate_by_company_and_maker(df)
                     
                     progress_bar.progress(90, text="集計結果を準備中...")
                     st.session_state['aggregated_data'] = aggregated_data
+                    st.session_state['self_exchange_df'] = self_exchange_df
                     
                     progress_bar.progress(100, text="完了！")
                     status_text.empty()
                     progress_bar.empty()
                     
-                    st.success(f"✅ 集計完了！{len(aggregated_data)}社のデータを集計しました")
+                    self_exchange_count = len(self_exchange_df) if not self_exchange_df.empty else 0
+                    success_msg = f"✅ 集計完了！{len(aggregated_data)}社のデータを集計しました"
+                    if self_exchange_count > 0:
+                        success_msg += f"（自社交換分: {self_exchange_count:,}件を除外）"
+                    st.success(success_msg)
                     st.balloons()
                     
                 except Exception as e:
@@ -441,293 +538,103 @@ def main():
                 st.markdown("---")
                 st.header("📈 集計結果")
             
-                # PT企業選択
-                selected_company = st.selectbox(
-                    "PT企業を選択",
-                    options=sorted(aggregated_data.keys()),
-                    index=0
-                )
-            
-                if selected_company:
-                    company_data = aggregated_data[selected_company]
+                # 全企業のデータを1つのExcelファイルに出力
+                st.subheader("全PT企業のデータを一括ダウンロード")
                 
-                    # タブで表示を切り替え
-                    tab1, tab2, tab3 = st.tabs(["📋 集計表", "📊 グラフ", "💾 Excel出力"])
+                st.info("💡 全PT企業の集計結果と生データを含むZIPファイルをダウンロードできます")
+                st.warning("⚠️ 生データを含むため、ファイルサイズが大きくなります")
                 
-                    with tab1:
-                        st.subheader(f"{selected_company} の集計結果")
+                if st.button("📦 全企業のExcelファイルを準備", key="prepare_all_excel"):
+                    with st.spinner(f"全{len(aggregated_data)}社のExcelファイルをZIP化中..."):
+                        # ZIPファイルを作成
+                        zip_buffer = io.BytesIO()
                         
-                        # 重複除外の統計情報を表示
-                        if '総重複除外数' in company_data.columns:
-                            total_row = company_data[company_data['user_name'] == '合計']
-                            if len(total_row) > 0:
-                                total_exchanges = int(total_row['総合計'].values[0])
-                                total_duplicates = int(total_row['総重複除外数'].values[0])
-                                total_with_duplicates = total_exchanges + total_duplicates
+                        # 生データから一時列を削除
+                        df_clean = df.copy()
+                        temp_cols = ['is_duplicate', '基準判定', 'prev_code', 'prev_date', 'time_diff', 'is_self_exchange']
+                        df_clean = df_clean.drop(columns=[col for col in temp_cols if col in df_clean.columns], errors='ignore')
+                        
+                        # 自社交換分のデータを準備
+                        self_exchange_clean = None
+                        if 'self_exchange_df' in st.session_state and not st.session_state['self_exchange_df'].empty:
+                            self_exchange_clean = st.session_state['self_exchange_df'].copy()
+                            self_exchange_clean = self_exchange_clean.drop(columns=[col for col in temp_cols if col in self_exchange_clean.columns], errors='ignore')
+                        
+                        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+                            progress_bar = st.progress(0)
+                            total = len(aggregated_data) + 1  # 企業ごとのファイル + 全企業まとめファイル
+                            
+                            # 全企業の集計結果をまとめたExcelファイルを作成
+                            all_companies_excel = io.BytesIO()
+                            with pd.ExcelWriter(all_companies_excel, engine='openpyxl') as writer:
+                                # 全企業の集計結果を1つのシートに統合
+                                all_companies_data = []
                                 
-                                st.info(f"""
-                                📊 **データ統計**
-                                - 総交換件数（重複除外後）: **{total_exchanges:,}件**
-                                - 重複除外数: **{total_duplicates:,}件**
-                                - 元データ件数: **{total_with_duplicates:,}件**
-                                - 重複率: **{(total_duplicates / total_with_duplicates * 100):.2f}%**
+                                for company, data in aggregated_data.items():
+                                    # 各企業のデータに企業名列を追加
+                                    company_with_name = data.copy()
+                                    company_with_name.insert(0, 'PT企業名', company)
+                                    all_companies_data.append(company_with_name)
                                 
-                                💡 **集計方法:**
-                                - **基準内・基準外**: 重複除外後のデータで判定
-                                - **合計**: 基準内 + 基準外 + 基準判定なし（重複除外後）
-                                - **重複除外数**: 前後1時間以内に同じ車両番号で記録された件数
-                                """)
-                        
-                        st.dataframe(
-                            company_data,
-                            use_container_width=True,
-                            height=600
-                        )
-                
-                    with tab2:
-                        st.subheader(f"{selected_company} - データビジュアライゼーション")
-                    
-                        # グラフ表示（合計行を除く）
-                        chart_data = company_data[company_data['user_name'] != '合計'].copy()
-                    
-                        if len(chart_data) > 0 and '総合計' in chart_data.columns:
-                            # 上位10名を取得
-                            top_users = chart_data.nlargest(10, '総合計')['user_name'].tolist()
-                            chart_data_top = chart_data[chart_data['user_name'].isin(top_users)]
-                        
-                            # 1. メーカー別合計のグラフ
-                            st.markdown("#### メーカー別交換件数（上位10名）")
-                            maker_total_cols = [col for col in chart_data.columns if col.endswith('_合計') and col != '総合計']
-                        
-                            if maker_total_cols:
-                                chart_data_maker = pd.melt(
-                                    chart_data_top,
-                                    id_vars=['user_name'],
-                                    value_vars=maker_total_cols,
-                                    var_name='メーカー',
-                                    value_name='件数'
-                                )
-                                # メーカー名をクリーンアップ（"_合計"を削除）
-                                chart_data_maker['メーカー'] = chart_data_maker['メーカー'].str.replace('_合計', '')
-                            
-                                fig1 = px.bar(
-                                    chart_data_maker,
-                                    x='user_name',
-                                    y='件数',
-                                    color='メーカー',
-                                    title=f"{selected_company} - ユーザー別・メーカー別実績（上位10名）",
-                                    labels={'user_name': 'ユーザー名'},
-                                    height=500
-                                )
-                                st.plotly_chart(fig1, use_container_width=True)
-                        
-                            # 2. 基準内/基準外のグラフ
-                            st.markdown("#### 基準内/基準外の内訳（上位10名）")
-                        
-                            # 基準内と基準外の列を取得
-                            kijun_nai_cols = [col for col in chart_data.columns if col.endswith('_基準内')]
-                            kijun_gai_cols = [col for col in chart_data.columns if col.endswith('_基準外')]
-                        
-                            if kijun_nai_cols and kijun_gai_cols:
-                                # 各ユーザーの基準内/基準外合計を計算
-                                chart_data_top['基準内合計'] = chart_data_top[kijun_nai_cols].sum(axis=1)
-                                chart_data_top['基準外合計'] = chart_data_top[kijun_gai_cols].sum(axis=1)
-                            
-                                chart_data_kijun = pd.melt(
-                                    chart_data_top,
-                                    id_vars=['user_name'],
-                                    value_vars=['基準内合計', '基準外合計'],
-                                    var_name='区分',
-                                    value_name='件数'
-                                )
-                            
-                                fig2 = px.bar(
-                                    chart_data_kijun,
-                                    x='user_name',
-                                    y='件数',
-                                    color='区分',
-                                    title=f"{selected_company} - 基準内/基準外の内訳",
-                                    labels={'user_name': 'ユーザー名'},
-                                    color_discrete_map={'基準内合計': '#2ecc71', '基準外合計': '#e74c3c'},
-                                    height=500
-                                )
-                                st.plotly_chart(fig2, use_container_width=True)
-                        
-                            # 3. 円グラフ：メーカー別シェア
-                            st.markdown("#### メーカー別シェア")
-                            maker_totals = company_data[company_data['user_name'] == '合計']
-                            if len(maker_totals) > 0 and maker_total_cols:
-                                maker_data = maker_totals[maker_total_cols].T
-                                maker_data.columns = ['件数']
-                                maker_data = maker_data[maker_data['件数'] > 0]
-                                maker_data.index = maker_data.index.str.replace('_合計', '')
-                            
-                                col1, col2 = st.columns(2)
-                            
-                                with col1:
-                                    fig_pie = px.pie(
-                                        maker_data,
-                                        values='件数',
-                                        names=maker_data.index,
-                                        title=f"{selected_company} - メーカー別シェア",
-                                        height=400
-                                    )
-                                    st.plotly_chart(fig_pie, use_container_width=True)
-                            
-                                with col2:
-                                    # 基準内/基準外の円グラフ
-                                    if len(maker_totals) > 0 and kijun_nai_cols and kijun_gai_cols:
-                                        kijun_data = pd.DataFrame({
-                                            '区分': ['基準内', '基準外'],
-                                            '件数': [
-                                                maker_totals[kijun_nai_cols].sum(axis=1).values[0],
-                                                maker_totals[kijun_gai_cols].sum(axis=1).values[0]
-                                            ]
-                                        })
-                                    
-                                        fig_pie2 = px.pie(
-                                            kijun_data,
-                                            values='件数',
-                                            names='区分',
-                                            title=f"{selected_company} - 基準内/基準外シェア",
-                                            color='区分',
-                                            color_discrete_map={'基準内': '#2ecc71', '基準外': '#e74c3c'},
-                                            height=400
-                                        )
-                                        st.plotly_chart(fig_pie2, use_container_width=True)
-                
-                    with tab3:
-                        st.subheader("Excel形式でダウンロード")
-                    
-                        st.info("💡 集計結果と生データの両方が含まれたExcelファイルをダウンロードできます")
-                    
-                        # 選択した企業のデータをExcel出力（集計結果 + 生データ）
-                        if st.button("📦 Excelファイルを準備", key="prepare_single_excel"):
-                            with st.spinner("Excelファイルを作成中..."):
-                                output = io.BytesIO()
-                                with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                                    # シート1: 集計結果
-                                    company_data.to_excel(writer, sheet_name='集計結果', index=False)
+                                # 全企業のデータを結合
+                                combined_df = pd.concat(all_companies_data, ignore_index=True)
+                                combined_df.to_excel(writer, sheet_name='全PT企業集計', index=False)
                                 
-                                    # シート2: 生データ（該当企業のみ、一時列を除外）
-                                    company_raw_data = df[df['user_company(所属)'] == selected_company].copy()
-                                    # 一時列を削除
-                                    temp_cols = ['is_duplicate', '基準判定', 'prev_code', 'prev_date', 'time_diff']
-                                    company_raw_data = company_raw_data.drop(columns=[col for col in temp_cols if col in company_raw_data.columns], errors='ignore')
-                                    company_raw_data.to_excel(writer, sheet_name='生データ', index=False)
-                                output.seek(0)
+                                # 自社交換分シートを追加
+                                if self_exchange_clean is not None and not self_exchange_clean.empty:
+                                    self_exchange_clean.to_excel(writer, sheet_name='自社交換分', index=False)
                             
-                                st.session_state['single_excel_data'] = output.getvalue()
-                                st.success("✅ Excelファイルの準備完了！")
-                        
-                        # ダウンロードボタンを表示
-                        if 'single_excel_data' in st.session_state:
-                            st.download_button(
-                                label=f"📥 {selected_company} のデータをダウンロード（集計+生データ）",
-                                data=st.session_state['single_excel_data'],
-                                file_name=f"{selected_company}_集計結果_生データ.xlsx",
-                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                            all_companies_excel.seek(0)
+                            zip_file.writestr(
+                                "全企業_集計結果.xlsx",
+                                all_companies_excel.getvalue()
                             )
-                    
-                        # データサマリーを表示
-                        st.markdown("---")
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            st.metric("集計結果の行数", f"{len(company_data):,}行")
-                        with col2:
-                            company_raw_data = df[df['user_company(所属)'] == selected_company]
-                            st.metric("生データの行数", f"{len(company_raw_data):,}行")
-                    
-                        # 全企業のデータを1つのExcelファイルに出力
-                        st.markdown("---")
-                        st.subheader("全PT企業のデータを一括ダウンロード")
-                    
-                        download_option = st.radio(
-                            "ダウンロード形式を選択",
-                            options=["集計結果のみ", "集計結果 + 生データ"],
-                            horizontal=True,
-                            key="download_all_option"
-                        )
-                    
-                        if st.button("📦 全企業のExcelファイルを準備", key="prepare_all_excel"):
-                            if download_option == "集計結果のみ":
-                                with st.spinner(f"全{len(aggregated_data)}社の集計結果をExcelに出力中..."):
-                                    # 全企業の集計結果を1つのシートに統合
-                                    all_companies_data = []
-                                    
-                                    for company, data in aggregated_data.items():
-                                        # 各企業のデータに企業名列を追加
-                                        company_with_name = data.copy()
-                                        company_with_name.insert(0, 'PT企業名', company)
-                                        all_companies_data.append(company_with_name)
-                                    
-                                    # 全企業のデータを結合
-                                    combined_df = pd.concat(all_companies_data, ignore_index=True)
-                                    
-                                    # Excelに出力
-                                    output_all = io.BytesIO()
-                                    with pd.ExcelWriter(output_all, engine='openpyxl') as writer:
-                                        combined_df.to_excel(writer, sheet_name='全PT企業集計', index=False)
-                                    output_all.seek(0)
-                                    
-                                    st.session_state['all_excel_data'] = output_all.getvalue()
-                                    st.session_state['all_excel_filename'] = "全PT企業_集計結果.xlsx"
-                                    st.session_state['all_excel_mime'] = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                                    st.success(f"✅ Excelファイルの準備完了！（全{len(aggregated_data)}社、{len(combined_df):,}行）")
-                            else:
-                                st.warning("⚠️ 生データを含むため、ファイルサイズが大きくなります")
+                            progress_bar.progress(1 / total)
+                            
+                            # 各企業ごとに1つのExcelファイルを作成
+                            for idx, (company, data) in enumerate(aggregated_data.items()):
+                                excel_buffer = io.BytesIO()
                                 
-                                with st.spinner(f"全{len(aggregated_data)}社のExcelファイルをZIP化中..."):
-                                    # ZIPファイルを作成
-                                    zip_buffer = io.BytesIO()
+                                with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
+                                    # 集計結果シート
+                                    data.to_excel(writer, sheet_name='集計結果', index=False)
                                     
-                                    # 生データから一時列を削除
-                                    df_clean = df.copy()
-                                    temp_cols = ['is_duplicate', '基準判定', 'prev_code', 'prev_date', 'time_diff']
-                                    df_clean = df_clean.drop(columns=[col for col in temp_cols if col in df_clean.columns], errors='ignore')
+                                    # 生データシート
+                                    company_raw = df_clean[df_clean['user_company(所属)'] == company].copy()
+                                    company_raw.to_excel(writer, sheet_name='生データ', index=False)
                                     
-                                    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
-                                        progress_bar = st.progress(0)
-                                        total = len(aggregated_data)
-                                        
-                                        for idx, (company, data) in enumerate(aggregated_data.items()):
-                                            # 各企業ごとに1つのExcelファイルを作成
-                                            excel_buffer = io.BytesIO()
-                                            
-                                            with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
-                                                # 集計結果シート
-                                                data.to_excel(writer, sheet_name='集計結果', index=False)
-                                                
-                                                # 生データシート
-                                                company_raw = df_clean[df_clean['user_company(所属)'] == company].copy()
-                                                company_raw.to_excel(writer, sheet_name='生データ', index=False)
-                                            
-                                            # ZIPに追加（ファイル名をクリーンアップ）
-                                            safe_company_name = company.replace('/', '_').replace('\\', '_')
-                                            zip_file.writestr(
-                                                f"{safe_company_name}_集計結果_生データ.xlsx",
-                                                excel_buffer.getvalue()
-                                            )
-                                            
-                                            progress_bar.progress((idx + 1) / total)
-                                        
-                                        progress_bar.empty()
-                                    
-                                    zip_buffer.seek(0)
-                                    st.session_state['all_excel_data'] = zip_buffer.getvalue()
-                                    st.session_state['all_excel_filename'] = "全PT企業_集計結果_生データ.zip"
-                                    st.session_state['all_excel_mime'] = "application/zip"
-                                    st.success(f"✅ ZIPファイルの準備完了！（全{len(aggregated_data)}社のExcelファイル）")
+                                    # 自社交換分シート（該当企業のみ）
+                                    if self_exchange_clean is not None and not self_exchange_clean.empty:
+                                        company_self_exchange = self_exchange_clean[self_exchange_clean['user_company(所属)'] == company].copy()
+                                        if not company_self_exchange.empty:
+                                            company_self_exchange.to_excel(writer, sheet_name='自社交換分', index=False)
+                                
+                                # ZIPに追加（ファイル名をクリーンアップ）
+                                safe_company_name = company.replace('/', '_').replace('\\', '_')
+                                zip_file.writestr(
+                                    f"{safe_company_name}_集計結果_生データ.xlsx",
+                                    excel_buffer.getvalue()
+                                )
+                                
+                                progress_bar.progress((idx + 2) / total)  # +2は全企業ファイル分とインデックス調整
+                            
+                            progress_bar.empty()
                         
-                        # ダウンロードボタンを表示
-                        if 'all_excel_data' in st.session_state:
-                            st.download_button(
-                                label=f"📥 {st.session_state['all_excel_filename']} をダウンロード",
-                                data=st.session_state['all_excel_data'],
-                                file_name=st.session_state['all_excel_filename'],
-                                mime=st.session_state.get('all_excel_mime', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'),
-                                key="download_all_excel"
-                            )
+                        zip_buffer.seek(0)
+                        st.session_state['all_excel_data'] = zip_buffer.getvalue()
+                        st.session_state['all_excel_filename'] = "全PT企業_集計結果_生データ.zip"
+                        st.session_state['all_excel_mime'] = "application/zip"
+                        st.success(f"✅ ZIPファイルの準備完了！（全企業_集計結果.xlsx + {len(aggregated_data)}社のExcelファイル）")
+                
+                # ダウンロードボタンを表示
+                if 'all_excel_data' in st.session_state:
+                    st.download_button(
+                        label=f"📥 {st.session_state['all_excel_filename']} をダウンロード",
+                        data=st.session_state['all_excel_data'],
+                        file_name=st.session_state['all_excel_filename'],
+                        mime=st.session_state.get('all_excel_mime', 'application/zip'),
+                        key="download_all_excel"
+                    )
             
     else:
         # ファイルが選択されていない場合
