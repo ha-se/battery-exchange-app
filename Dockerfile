@@ -9,6 +9,7 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y \
     gcc \
     g++ \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Pythonパッケージのインストール
@@ -18,6 +19,8 @@ RUN pip install --no-cache-dir --upgrade pip && \
 
 # アプリケーションファイルのコピー
 COPY app.py .
+COPY auth.py .
+COPY generate_password.py .
 COPY README.md .
 COPY .streamlit .streamlit
 

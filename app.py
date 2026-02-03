@@ -142,10 +142,11 @@ def upload_to_snowflake(df: pd.DataFrame, connection_params: dict, table_name: s
         st.error("❌ Snowflakeモジュールがインストールされていません")
         return False
     
+    conn = None
     try:
         # Snowflakeに接続
         conn = snowflake.connector.connect(**connection_params)
-        
+
         # カラム名をSnowflake用にクリーニング
         df_clean = df.copy()
         df_clean.columns = [
@@ -156,11 +157,11 @@ def upload_to_snowflake(df: pd.DataFrame, connection_params: dict, table_name: s
                .replace('.', '_')
             for col in df_clean.columns
         ]
-        
+
         # 一時列を削除
         temp_cols = ['is_duplicate', '基準判定', 'prev_code', 'prev_date', 'time_diff']
         df_clean = df_clean.drop(columns=[col for col in temp_cols if col in df_clean.columns], errors='ignore')
-        
+
         # write_pandasを使用して高速アップロード
         success, nchunks, nrows, _ = write_pandas(
             conn=conn,
@@ -170,13 +171,15 @@ def upload_to_snowflake(df: pd.DataFrame, connection_params: dict, table_name: s
             overwrite=True,
             quote_identifiers=False
         )
-        
-        conn.close()
+
         return success
-        
+
     except Exception as e:
         st.error(f"❌ Snowflakeアップロードエラー: {e}")
         return False
+    finally:
+        if conn is not None:
+            conn.close()
 
 def is_self_exchange(df: pd.DataFrame, row_index: int) -> bool:
     """
