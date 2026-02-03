@@ -268,13 +268,22 @@ def aggregate_by_company_and_maker(df: pd.DataFrame) -> Tuple[Dict[str, pd.DataF
     PT企業毎に、user_nameと自転車メーカー別の集計を行う
     基準内/基準外、重複除外も含めて集計
     自社交換分（E列とV列の特定組み合わせ）は除外し、別途返す
-    
+
     Returns:
         tuple: (集計結果Dict, 自社交換分DataFrame)
             - 集計結果Dict: PT企業名をキー、集計結果DataFrameを値とする辞書
             - 自社交換分DataFrame: 自社交換分のレコード
     """
-    company_col = 'user_company(所属)'
+    # V列の列名を動的に取得
+    company_col = df.attrs.get('v_column_name', 'user_company(所属)')
+    if company_col not in df.columns:
+        # フォールバック: 列名に「所属」を含む列を探す
+        company_cols = [col for col in df.columns if '所属' in str(col) or 'company' in str(col).lower()]
+        if company_cols:
+            company_col = company_cols[0]
+        else:
+            raise KeyError(f"PT企業列が見つかりません。列: {list(df.columns)}")
+
     user_col = 'user_name'
     maker_col = '自転車メーカー名'
     
@@ -458,7 +467,7 @@ def main():
         
         # バージョン情報（デバッグ用）
         st.markdown("---")
-        st.caption("Version: 2025-12-30-v10 (全企業ダウンロード改善:統合Excel+ZIP)")
+        st.caption("Version: 2026-02-03-v11 (列名の動的取得対応)")
     
     # メインエリア
     if uploaded_file is not None:
@@ -500,10 +509,22 @@ def main():
                 try:
                     status_text.text("📊 データを分析中...")
                     progress_bar.progress(10, text="重複データを検出中...")
-                    
-                    # PT企業のリストを取得
-                    companies = df['user_company(所属)'].dropna().unique()
+
+                    # PT企業のリストを取得（V列の列名を動的に取得）
+                    company_col = df.attrs.get('v_column_name', 'user_company(所属)')
+                    if company_col not in df.columns:
+                        # フォールバック: 列名に「所属」を含む列を探す
+                        company_cols = [col for col in df.columns if '所属' in str(col) or 'company' in str(col).lower()]
+                        if company_cols:
+                            company_col = company_cols[0]
+                        else:
+                            raise KeyError(f"PT企業列が見つかりません。V列（22列目）に所属情報があるか確認してください。現在の列: {list(df.columns[:25])}")
+
+                    companies = df[company_col].dropna().unique()
                     total_companies = len(companies)
+
+                    # 列名をセッションに保存
+                    st.session_state['company_col'] = company_col
                     
                     status_text.text(f"🔍 重複データを検出中...（{len(df):,}行）")
                     progress_bar.progress(30, text="重複チェック実行中...")
@@ -595,20 +616,23 @@ def main():
                             progress_bar.progress(1 / total)
                             
                             # 各企業ごとに1つのExcelファイルを作成
+                            # 列名を取得（セッションから、またはattrsから）
+                            download_company_col = st.session_state.get('company_col', df.attrs.get('v_column_name', 'user_company(所属)'))
+
                             for idx, (company, data) in enumerate(aggregated_data.items()):
                                 excel_buffer = io.BytesIO()
-                                
+
                                 with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
                                     # 集計結果シート
                                     data.to_excel(writer, sheet_name='集計結果', index=False)
-                                    
+
                                     # 生データシート
-                                    company_raw = df_clean[df_clean['user_company(所属)'] == company].copy()
+                                    company_raw = df_clean[df_clean[download_company_col] == company].copy()
                                     company_raw.to_excel(writer, sheet_name='生データ', index=False)
-                                    
+
                                     # 自社交換分シート（該当企業のみ）
                                     if self_exchange_clean is not None and not self_exchange_clean.empty:
-                                        company_self_exchange = self_exchange_clean[self_exchange_clean['user_company(所属)'] == company].copy()
+                                        company_self_exchange = self_exchange_clean[self_exchange_clean[download_company_col] == company].copy()
                                         if not company_self_exchange.empty:
                                             company_self_exchange.to_excel(writer, sheet_name='自社交換分', index=False)
                                 
