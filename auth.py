@@ -4,7 +4,6 @@ Streamlit Community Cloud のパブリックアプリに認証を追加
 """
 import streamlit as st
 import hashlib
-import hmac
 
 def check_password():
     """
@@ -20,17 +19,13 @@ def check_password():
         username = st.session_state["username"]
         password = st.session_state["password"]
         
-        # ユーザー情報（実際の値は secrets.toml に保存）
-        # デフォルトのユーザー情報（テスト用）
-        if "passwords" in st.secrets:
-            # secrets.toml から読み込み
-            users = st.secrets["passwords"]
-        else:
-            # デフォルト（開発時のみ）
-            users = {
-                "admin": "5e884898da28047151d0e56f8dc6292773603d0d6aabbdd62a11ef721d1542d8",  # password
-                "user1": "8d969eef6ecad3c29a3a629280e686cf0c3f5d5a86aff3ca12020c923adc6c92",  # 123456
-            }
+        # ユーザー情報（secrets.toml から読み込み必須）
+        if "passwords" not in st.secrets:
+            st.session_state["password_correct"] = False
+            st.session_state["config_error"] = True
+            return
+
+        users = st.secrets["passwords"]
         
         # パスワードをハッシュ化
         password_hash = hashlib.sha256(password.encode()).hexdigest()
@@ -57,11 +52,11 @@ def check_password():
         st.text_input("ユーザー名", key="username", on_change=password_entered)
         st.text_input("パスワード", type="password", key="password", on_change=password_entered)
         
-        if st.session_state.get("password_correct", None) == False:
+        if st.session_state.get("config_error", False):
+            st.error("⚠️ 認証設定エラー: secrets.toml に [passwords] セクションが設定されていません")
+            st.info("管理者に連絡して認証情報を設定してください。")
+        elif st.session_state.get("password_correct", None) == False:
             st.error("😕 ユーザー名またはパスワードが正しくありません")
-        
-        st.markdown("---")
-        st.caption("💡 初期ユーザー名: `admin`, パスワード: `password` (変更してください)")
     
     return False
 
