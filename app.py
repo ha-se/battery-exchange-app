@@ -268,7 +268,7 @@ def aggregate_by_company_and_maker(df: pd.DataFrame) -> Tuple[Dict[str, pd.DataF
     PT企業毎に、user_nameと自転車メーカー別の集計を行う
     基準内/基準外、重複除外も含めて集計
     自社交換分（E列とV列の特定組み合わせ）は除外し、別途返す
-    
+
     Returns:
         tuple: (集計結果Dict, 自社交換分DataFrame)
             - 集計結果Dict: PT企業名をキー、集計結果DataFrameを値とする辞書
@@ -277,14 +277,27 @@ def aggregate_by_company_and_maker(df: pd.DataFrame) -> Tuple[Dict[str, pd.DataF
     company_col = 'user_company(所属)'
     user_col = 'user_name'
     maker_col = '自転車メーカー名'
+
+    # 企業名の正規化用列を作成（大文字/小文字を統一）
+    company_col_normalized = '_company_normalized'
     
     # 重複検出を実行
     df_with_standard = detect_duplicates(df)
-    
+
     # attrsを継承（E列とV列の列名情報）
     if hasattr(df, 'attrs'):
         df_with_standard.attrs.update(df.attrs)
-    
+
+    # 企業名の正規化列を追加（大文字/小文字を統一して比較用に使用）
+    df_with_standard[company_col_normalized] = df_with_standard[company_col].astype(str).str.lower().str.strip()
+
+    # 元の企業名と正規化した企業名のマッピングを作成（表示用に元の名前を保持）
+    company_name_mapping = {}
+    for orig_name in df_with_standard[company_col].dropna().unique():
+        normalized = str(orig_name).lower().strip()
+        if normalized not in company_name_mapping:
+            company_name_mapping[normalized] = orig_name
+
     # 基準判定列を追加
     df_with_standard['基準判定'] = df_with_standard.apply(check_battery_standard, axis=1)
     
@@ -323,12 +336,18 @@ def aggregate_by_company_and_maker(df: pd.DataFrame) -> Tuple[Dict[str, pd.DataF
     
     # PT企業毎に集計（自社交換分を除外したデータで集計）
     aggregated_data = {}
-    
-    companies = df_for_aggregation[company_col].dropna().unique()
-    
-    for i, company in enumerate(companies):
-        # 該当企業のデータを抽出（自社交換分を除外）
-        company_df = df_for_aggregation[df_for_aggregation[company_col] == company]
+
+    # 正規化した企業名でユニークなリストを取得
+    companies_normalized = df_for_aggregation[company_col_normalized].dropna().unique()
+    # 'nan'文字列を除外
+    companies_normalized = [c for c in companies_normalized if c != 'nan']
+
+    for i, company_normalized in enumerate(companies_normalized):
+        # 表示用の企業名を取得（マッピングから、なければ正規化名を使用）
+        company_display = company_name_mapping.get(company_normalized, company_normalized)
+
+        # 該当企業のデータを抽出（正規化した企業名で比較）
+        company_df = df_for_aggregation[df_for_aggregation[company_col_normalized] == company_normalized]
         
         # 各メーカーの結果を格納する辞書
         result_data = []
@@ -402,9 +421,9 @@ def aggregate_by_company_and_maker(df: pd.DataFrame) -> Tuple[Dict[str, pd.DataF
         # 存在する列のみを選択
         existing_columns = [col for col in ordered_columns if col in result_df.columns]
         result_df = result_df[existing_columns]
-        
-        aggregated_data[company] = result_df
-    
+
+        aggregated_data[company_display] = result_df
+
     return aggregated_data, self_exchange_df
 
 def main():
@@ -554,7 +573,7 @@ def main():
                         
                         # 生データから一時列を削除
                         df_clean = df.copy()
-                        temp_cols = ['is_duplicate', '基準判定', 'prev_code', 'prev_date', 'time_diff', 'is_self_exchange']
+                        temp_cols = ['is_duplicate', '基準判定', 'prev_code', 'prev_date', 'time_diff', 'is_self_exchange', '_company_normalized']
                         df_clean = df_clean.drop(columns=[col for col in temp_cols if col in df_clean.columns], errors='ignore')
                         
                         # 自社交換分のデータを準備
