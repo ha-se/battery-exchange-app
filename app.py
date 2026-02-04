@@ -366,33 +366,46 @@ def aggregate_by_company_and_maker(df: pd.DataFrame) -> Tuple[Dict[str, pd.DataF
             makers = ['Panasonic', 'YAMAHA', 'DBS', 'glafit', 'シナネンサイクル', 'KUROAD']
             total = 0
             total_duplicates = 0
-            
+            total_kijun_nai = 0  # 全メーカー合計：基準内
+            total_kijun_gai = 0  # 全メーカー合計：基準外
+            total_kijun_nashi = 0  # 全メーカー合計：基準判定なし
+
             for maker in makers:
                 # 重複除外データで集計（重複は含まない）
                 maker_df = user_df_no_dup[user_df_no_dup[maker_col] == maker]
                 # 重複データの件数（参考値）
                 maker_dup_count = len(user_df_dup[user_df_dup[maker_col] == maker])
-                
+
                 # 基準内の件数（重複除外後）
                 kijun_nai = len(maker_df[maker_df['基準判定'] == '基準内'])
                 # 基準外の件数（重複除外後）
                 kijun_gai = len(maker_df[maker_df['基準判定'] == '基準外'])
+                # 基準判定なしの件数（重複除外後）
+                kijun_nashi = len(maker_df[maker_df['基準判定'].isna() | (maker_df['基準判定'] == '')])
                 # 合計（重複除外後、基準判定がNoneの場合も含む）
                 maker_total = len(maker_df)
-                
-                # 検証: 基準内 + 基準外 = 合計 (KUROADなど基準判定がないものを除く)
-                # maker_total = kijun_nai + kijun_gai + (基準判定なし)
-                
+
+                # 検証: 基準内 + 基準外 + 基準判定なし = 合計
+                # maker_total = kijun_nai + kijun_gai + kijun_nashi
+
                 row_data[f'{maker}_基準内'] = kijun_nai
                 row_data[f'{maker}_基準外'] = kijun_gai
                 row_data[f'{maker}_合計'] = maker_total
                 row_data[f'{maker}_重複除外数'] = maker_dup_count
-                
+
                 total += maker_total
                 total_duplicates += maker_dup_count
-            
+                total_kijun_nai += kijun_nai
+                total_kijun_gai += kijun_gai
+                total_kijun_nashi += kijun_nashi
+
             row_data['総合計'] = total
             row_data['総重複除外数'] = total_duplicates
+            # 検証用：全メーカー合計の基準内・基準外・判定なし
+            row_data['全メーカー_基準内'] = total_kijun_nai
+            row_data['全メーカー_基準外'] = total_kijun_gai
+            row_data['全メーカー_判定なし'] = total_kijun_nashi
+            row_data['検証_基準内+判定なし'] = total_kijun_nai + total_kijun_nashi
             result_data.append(row_data)
         
         # DataFrameに変換
@@ -416,7 +429,10 @@ def aggregate_by_company_and_maker(df: pd.DataFrame) -> Tuple[Dict[str, pd.DataF
                     f'{maker}_合計',
                     f'{maker}_重複除外数'
                 ])
-        ordered_columns.extend(['総合計', '総重複除外数'])
+        ordered_columns.extend([
+            '総合計', '総重複除外数',
+            '全メーカー_基準内', '全メーカー_基準外', '全メーカー_判定なし', '検証_基準内+判定なし'
+        ])
         
         # 存在する列のみを選択
         existing_columns = [col for col in ordered_columns if col in result_df.columns]
