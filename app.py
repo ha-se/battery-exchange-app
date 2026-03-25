@@ -11,7 +11,10 @@ import zipfile
 
 
 
-from constants import TEMP_COLS, BIKE_COMPANY_EXCLUDE_COLS
+from openpyxl.worksheet.table import Table, TableStyleInfo
+from openpyxl.utils import get_column_letter
+
+from constants import TEMP_COLS, BIKE_COMPANY_EXCLUDE_COLS, SELF_EXCHANGE_MAPPING
 from processing import aggregate_by_company_and_maker
 
 # ページ設定
@@ -46,6 +49,37 @@ if ENABLE_AUTH:
 admin = "パスワードハッシュ値"
         """)
         st.stop()
+
+
+def _apply_excel_table(ws, table_name: str, style: str = "TableStyleMedium9"):
+    """ワークシートのデータ範囲をExcelテーブルとして設定する"""
+    if ws.max_row < 2:
+        return
+    ref = f"A1:{get_column_letter(ws.max_column)}{ws.max_row}"
+    tbl = Table(displayName=table_name, ref=ref)
+    tbl.tableStyleInfo = TableStyleInfo(
+        name=style, showRowStripes=True,
+        showFirstColumn=False, showLastColumn=False, showColumnStripes=False
+    )
+    ws.add_table(tbl)
+
+
+def _add_pivot_sheet(writer, df_pivot: pd.DataFrame, e_col_name: str, table_name: str = "PivotTable1"):
+    """bike_company × 自転車メーカー名 のクロス集計シートを追加する"""
+    maker_col = '自転車メーカー名'
+    if e_col_name not in df_pivot.columns or maker_col not in df_pivot.columns or df_pivot.empty:
+        return
+    pivot = pd.crosstab(
+        df_pivot[e_col_name],
+        df_pivot[maker_col],
+        margins=True,
+        margins_name='合計'
+    )
+    pivot.index.name = e_col_name
+    pivot = pivot.reset_index()
+    pivot.to_excel(writer, sheet_name='ピボット', index=False)
+    ws = writer.sheets['ピボット']
+    _apply_excel_table(ws, table_name, style="TableStyleMedium2")
 
 
 @st.cache_data(show_spinner=False)
@@ -260,11 +294,32 @@ def main():
                     if st.button(btn_label, key="prepare_bike_excels", disabled=not selected_bike_companies):
                         with st.spinner(f"{len(selected_bike_companies)}社分のExcelファイルを生成中..."):
                             bike_excel_files = {}
-                            for bike_company in selected_bike_companies:
-                                company_raw = df_clean_bike[df_clean_bike[e_col_name] == bike_company].copy()
+                            for idx, bike_company in enumerate(selected_bike_companies):
                                 excel_buf = io.BytesIO()
                                 with pd.ExcelWriter(excel_buf, engine='openpyxl') as writer:
-                                    company_raw.to_excel(writer, sheet_name='ローデータ', index=False)
+                                    if bike_company in SELF_EXCHANGE_MAPPING:
+                                        # 自社交換分を別シートに分離
+                                        company_df_orig = df[df[e_col_name] == bike_company].copy()
+                                        exclude = [col for col in TEMP_COLS + BIKE_COMPANY_EXCLUDE_COLS if col in company_df_orig.columns]
+                                        if 'is_self_exchange' in company_df_orig.columns:
+                                            self_exc = company_df_orig[company_df_orig['is_self_exchange'] == True].copy()
+                                            non_self = company_df_orig[company_df_orig['is_self_exchange'] == False].copy()
+                                        else:
+                                            self_exc = pd.DataFrame()
+                                            non_self = company_df_orig
+                                        non_self_clean = non_self.drop(columns=exclude, errors='ignore')
+                                        non_self_clean.to_excel(writer, sheet_name='ローデータ', index=False)
+                                        _apply_excel_table(writer.sheets['ローデータ'], f"TableRaw{idx}")
+                                        if not self_exc.empty:
+                                            self_exc_clean = self_exc.drop(columns=exclude, errors='ignore')
+                                            self_exc_clean.to_excel(writer, sheet_name='自社交換分', index=False)
+                                            _apply_excel_table(writer.sheets['自社交換分'], f"TableSelf{idx}")
+                                        _add_pivot_sheet(writer, non_self_clean, e_col_name, f"PivotTable{idx}")
+                                    else:
+                                        company_raw = df_clean_bike[df_clean_bike[e_col_name] == bike_company].copy()
+                                        company_raw.to_excel(writer, sheet_name='ローデータ', index=False)
+                                        _apply_excel_table(writer.sheets['ローデータ'], f"TableRaw{idx}")
+                                        _add_pivot_sheet(writer, company_raw, e_col_name, f"PivotTable{idx}")
                                 excel_buf.seek(0)
                                 bike_excel_files[str(bike_company)] = excel_buf.getvalue()
                             st.session_state['bike_excel_files'] = bike_excel_files
