@@ -8,6 +8,7 @@ import plotly.express as px
 import io
 import os
 import zipfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
 
@@ -101,6 +102,33 @@ def _add_pivot_sheet(writer, df_pivot: pd.DataFrame, e_col_name: str,
     pivot.to_excel(writer, sheet_name='ピボット', index=False)
     ws = writer.sheets['ピボット']
     _apply_excel_table(ws, table_name, style="TableStyleMedium2")
+
+
+def _build_company_excel(
+    company: str,
+    data: pd.DataFrame,
+    idx: int,
+    raw_by_company: dict,
+    self_by_company: dict,
+):
+    """1社分のExcelをBytesIOで生成して (safe_name, bytes) を返す（スレッド並列可）"""
+    buf = io.BytesIO()
+    raw_df = raw_by_company.get(company, pd.DataFrame())
+    self_df = self_by_company.get(company, pd.DataFrame())
+    with pd.ExcelWriter(buf, engine='openpyxl') as writer:
+        data.to_excel(writer, sheet_name='集計結果', index=False)
+        _apply_excel_table(writer.sheets['集計結果'], f"TableSummary{idx}")
+
+        if not raw_df.empty:
+            raw_df.to_excel(writer, sheet_name='生データ', index=False)
+            _apply_excel_table(writer.sheets['生データ'], f"TableRaw{idx}")
+
+        if not self_df.empty:
+            self_df.to_excel(writer, sheet_name='自社交換分', index=False)
+            _apply_excel_table(writer.sheets['自社交換分'], f"TableSelf{idx}")
+
+    safe_name = company.replace('/', '_').replace('\\', '_')
+    return safe_name, buf.getvalue()
 
 
 @st.cache_data(show_spinner=False)
@@ -213,6 +241,7 @@ def main():
                 if st.button("📦 全企業のExcelファイルを準備", key="prepare_all_excel"):
                     with st.spinner(f"全{len(aggregated_data)}社のExcelファイルをZIP化中..."):
                         zip_buffer = io.BytesIO()
+                        company_col = 'user_company(所属)'
 
                         # 生データから一時列を削除
                         df_clean = df.copy()
@@ -226,9 +255,20 @@ def main():
 
                         today_str = pd.Timestamp.now().strftime('%Y%m%d')
 
+                        # 企業ごとに事前分割（ループ内での28回フィルタリングを廃止）
+                        raw_by_company = {
+                            c: grp.reset_index(drop=True)
+                            for c, grp in df_clean.groupby(company_col)
+                        }
+                        self_by_company = {}
+                        if self_exchange_clean is not None and not self_exchange_clean.empty:
+                            self_by_company = {
+                                c: grp.reset_index(drop=True)
+                                for c, grp in self_exchange_clean.groupby(company_col)
+                            }
+
                         with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
                             progress_bar = st.progress(0)
-                            total = len(aggregated_data) + 1  # 企業ごとのファイル + 全企業まとめファイル
 
                             # 全企業の集計結果をまとめたExcelファイルを作成
                             all_companies_excel = io.BytesIO()
@@ -250,33 +290,31 @@ def main():
 
                             all_companies_excel.seek(0)
                             zip_file.writestr(f"全企業_集計結果_{today_str}.xlsx", all_companies_excel.getvalue())
-                            progress_bar.progress(1 / total)
+                            progress_bar.progress(0.1)
 
-                            # 各企業ごとに1つのExcelファイルを作成
-                            for idx, (company, data) in enumerate(aggregated_data.items()):
-                                excel_buffer = io.BytesIO()
+                            # 各企業のExcelをThreadPoolExecutorで並列生成
+                            company_items = list(aggregated_data.items())
+                            n = len(company_items)
+                            excel_results = {}
+                            with ThreadPoolExecutor() as executor:
+                                futures = {
+                                    executor.submit(
+                                        _build_company_excel, company, data, idx,
+                                        raw_by_company, self_by_company
+                                    ): company
+                                    for idx, (company, data) in enumerate(company_items)
+                                }
+                                for done, future in enumerate(as_completed(futures), 1):
+                                    safe_name, excel_bytes = future.result()
+                                    excel_results[safe_name] = excel_bytes
+                                    progress_bar.progress(0.1 + 0.9 * done / n)
 
-                                with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
-                                    data.to_excel(writer, sheet_name='集計結果', index=False)
-                                    _apply_excel_table(writer.sheets['集計結果'], f"TableSummary{idx}")
-
-                                    company_raw = df_clean[df_clean['user_company(所属)'] == company].copy()
-                                    company_raw.to_excel(writer, sheet_name='生データ', index=False)
-                                    _apply_excel_table(writer.sheets['生データ'], f"TableRaw{idx}")
-
-                                    if self_exchange_clean is not None and not self_exchange_clean.empty:
-                                        company_self_exchange = self_exchange_clean[self_exchange_clean['user_company(所属)'] == company].copy()
-                                        if not company_self_exchange.empty:
-                                            company_self_exchange.to_excel(writer, sheet_name='自社交換分', index=False)
-                                            _apply_excel_table(writer.sheets['自社交換分'], f"TableSelf{idx}")
-
-                                safe_company_name = company.replace('/', '_').replace('\\', '_')
+                            # ZIPへの書き込みはメインスレッドで（スレッドセーフ）
+                            for safe_name, excel_bytes in excel_results.items():
                                 zip_file.writestr(
-                                    f"{safe_company_name}_集計結果_{today_str}.xlsx",
-                                    excel_buffer.getvalue()
+                                    f"{safe_name}_集計結果_{today_str}.xlsx",
+                                    excel_bytes
                                 )
-
-                                progress_bar.progress((idx + 2) / total)
 
                             progress_bar.empty()
 
