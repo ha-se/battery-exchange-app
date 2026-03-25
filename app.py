@@ -640,19 +640,27 @@ def main():
                                 
                                 progress_bar.progress((idx + 2) / total)  # +2は全企業ファイル分とインデックス調整
                             
-                            # bike_company毎の集計エクセルを作成 (各bike_companyをシートに)
-                            if 'aggregated_by_bike' in st.session_state and st.session_state['aggregated_by_bike']:
+                            # bike_company毎のローデータエクセルを作成 (各bike_companyをシートに)
+                            e_col_name = df.attrs.get('e_column_name', None) if hasattr(df, 'attrs') else None
+                            if not e_col_name and len(df.columns) > 4:
+                                e_col_name = df.columns[4]
+                                
+                            if e_col_name and e_col_name in df_clean.columns:
                                 bike_excel_buffer = io.BytesIO()
                                 with pd.ExcelWriter(bike_excel_buffer, engine='openpyxl') as writer:
-                                    for bike_company, data in st.session_state['aggregated_by_bike'].items():
+                                    bike_companies = df_clean[e_col_name].dropna().unique()
+                                    for bike_company in bike_companies:
+                                        # 該当bike_companyのローデータを抽出
+                                        company_raw = df_clean[df_clean[e_col_name] == bike_company].copy()
+                                        
                                         # シート名は31文字制限などを考慮
                                         safe_sheet_name = str(bike_company)[:31].replace('/', '_').replace('\\', '_').replace('[', '').replace(']', '').replace('*', '').replace('?', '').replace(':', '')
                                         if not safe_sheet_name:
                                             safe_sheet_name = "不明"
-                                        data.to_excel(writer, sheet_name=safe_sheet_name, index=False)
+                                        company_raw.to_excel(writer, sheet_name=safe_sheet_name, index=False)
                                 
                                 bike_excel_buffer.seek(0)
-                                zip_file.writestr("bike_company毎_集計結果.xlsx", bike_excel_buffer.getvalue())
+                                zip_file.writestr("bike_company毎_ローデータ.xlsx", bike_excel_buffer.getvalue())
 
                             progress_bar.empty()
                         
@@ -660,7 +668,7 @@ def main():
                         st.session_state['all_excel_data'] = zip_buffer.getvalue()
                         st.session_state['all_excel_filename'] = "全PT企業_集計結果_生データ.zip"
                         st.session_state['all_excel_mime'] = "application/zip"
-                        st.success(f"✅ ZIPファイルの準備完了！（全企業_集計結果.xlsx + {len(aggregated_data)}社のExcelファイル + bike_company毎_集計結果.xlsx）")
+                        st.success(f"✅ ZIPファイルの準備完了！（全企業_集計結果.xlsx + {len(aggregated_data)}社のExcelファイル + bike_company毎_ローデータ.xlsx）")
                 
                 # ダウンロードボタンを表示
                 if 'all_excel_data' in st.session_state:
