@@ -173,7 +173,7 @@ def main():
 
         # バージョン情報（デバッグ用）
         st.markdown("---")
-        st.caption("Version: 2025-12-30-v10 (全企業ダウンロード改善:統合Excel+ZIP)")
+        st.caption("Version: 2026-03-25-v11 (bike_company個別ダウンロード対応)")
 
     # メインエリア
     if uploaded_file is not None:
@@ -320,32 +320,13 @@ def main():
 
                                 progress_bar.progress((idx + 2) / total)
 
-                            # bike_company毎のローデータエクセルを作成
-                            e_col_name = df.attrs.get('e_column_name', None) if hasattr(df, 'attrs') else None
-                            if not e_col_name and len(df.columns) > 4:
-                                e_col_name = df.columns[4]
-
-                            if e_col_name and e_col_name in df_clean.columns:
-                                bike_excel_buffer = io.BytesIO()
-                                with pd.ExcelWriter(bike_excel_buffer, engine='openpyxl') as writer:
-                                    bike_companies = df_clean[e_col_name].dropna().unique()
-                                    for bike_company in bike_companies:
-                                        company_raw = df_clean[df_clean[e_col_name] == bike_company].copy()
-                                        safe_sheet_name = str(bike_company)[:31].replace('/', '_').replace('\\', '_').replace('[', '').replace(']', '').replace('*', '').replace('?', '').replace(':', '')
-                                        if not safe_sheet_name:
-                                            safe_sheet_name = "不明"
-                                        company_raw.to_excel(writer, sheet_name=safe_sheet_name, index=False)
-
-                                bike_excel_buffer.seek(0)
-                                zip_file.writestr("bike_company毎_ローデータ.xlsx", bike_excel_buffer.getvalue())
-
                             progress_bar.empty()
 
                         zip_buffer.seek(0)
                         st.session_state['all_excel_data'] = zip_buffer.getvalue()
                         st.session_state['all_excel_filename'] = "全PT企業_集計結果_生データ.zip"
                         st.session_state['all_excel_mime'] = "application/zip"
-                        st.success(f"✅ ZIPファイルの準備完了！（全企業_集計結果.xlsx + {len(aggregated_data)}社のExcelファイル + bike_company毎_ローデータ.xlsx）")
+                        st.success(f"✅ ZIPファイルの準備完了！（全企業_集計結果.xlsx + {len(aggregated_data)}社のExcelファイル）")
 
                 # ダウンロードボタンを表示
                 if 'all_excel_data' in st.session_state:
@@ -356,6 +337,48 @@ def main():
                         mime=st.session_state.get('all_excel_mime', 'application/zip'),
                         key="download_all_excel"
                     )
+
+                st.markdown("---")
+                st.subheader("🚲 bike_company毎のローデータをダウンロード")
+                st.info("💡 各bike_companyのローデータを個別にダウンロードできます")
+
+                e_col_name = df.attrs.get('e_column_name', None) if hasattr(df, 'attrs') else None
+                if not e_col_name and len(df.columns) > 4:
+                    e_col_name = df.columns[4]
+
+                if e_col_name and e_col_name in df.columns:
+                    df_clean_bike = df.copy()
+                    df_clean_bike = df_clean_bike.drop(columns=[col for col in TEMP_COLS if col in df_clean_bike.columns], errors='ignore')
+
+                    bike_companies = sorted(df_clean_bike[e_col_name].dropna().unique())
+
+                    if st.button("📊 全bike_company Excelを準備", key="prepare_bike_excels"):
+                        with st.spinner(f"{len(bike_companies)}社分のExcelファイルを生成中..."):
+                            bike_excel_files = {}
+                            for bike_company in bike_companies:
+                                company_raw = df_clean_bike[df_clean_bike[e_col_name] == bike_company].copy()
+                                excel_buf = io.BytesIO()
+                                with pd.ExcelWriter(excel_buf, engine='openpyxl') as writer:
+                                    company_raw.to_excel(writer, sheet_name='ローデータ', index=False)
+                                excel_buf.seek(0)
+                                bike_excel_files[str(bike_company)] = excel_buf.getvalue()
+                            st.session_state['bike_excel_files'] = bike_excel_files
+                        st.success(f"✅ {len(bike_companies)}社分のExcelファイルを準備しました")
+
+                    if 'bike_excel_files' in st.session_state:
+                        cols = st.columns(3)
+                        for i, bike_company in enumerate(sorted(st.session_state['bike_excel_files'].keys())):
+                            safe_name = bike_company.replace('/', '_').replace('\\', '_')
+                            with cols[i % 3]:
+                                st.download_button(
+                                    label=f"📥 {bike_company}",
+                                    data=st.session_state['bike_excel_files'][bike_company],
+                                    file_name=f"{safe_name}_ローデータ.xlsx",
+                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                    key=f"download_bike_{i}"
+                                )
+                else:
+                    st.warning("⚠️ E列（bike_company列）が見つかりません")
 
     else:
         # ファイルが選択されていない場合

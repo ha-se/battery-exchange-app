@@ -92,7 +92,7 @@ redirect_uri = "http://localhost:8501" # 実際のURLに合わせて変更
     # ログインボタン風リンクをHTMLで出力
     html_button = f"""
     <div style="margin-top: 20px;">
-        <a href="{authorization_url}" target="_self" 
+        <a href="{authorization_url}" target="_blank" rel="noopener noreferrer"
            style="display: inline-block; padding: 10px 20px; 
                   background-color: #4285F4; color: white; 
                   text-decoration: none; border-radius: 4px; font-weight: bold; border: 1px solid #357AE8;">
@@ -117,8 +117,5 @@ def logout():
 def get_authenticated_user():
     """
     認証済みのユーザー名(Email)を取得
-    
-    Returns:
-        str: ユーザーのメールアドレス
     """
     return st.session_state.get("authenticated_user", "Unknown")
