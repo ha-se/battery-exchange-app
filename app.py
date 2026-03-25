@@ -224,6 +224,8 @@ def main():
                             self_exchange_clean = st.session_state['self_exchange_df'].copy()
                             self_exchange_clean = self_exchange_clean.drop(columns=[col for col in TEMP_COLS if col in self_exchange_clean.columns], errors='ignore')
 
+                        today_str = pd.Timestamp.now().strftime('%Y%m%d')
+
                         with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
                             progress_bar = st.progress(0)
                             total = len(aggregated_data) + 1  # 企業ごとのファイル + 全企業まとめファイル
@@ -240,12 +242,14 @@ def main():
 
                                 combined_df = pd.concat(all_companies_data, ignore_index=True)
                                 combined_df.to_excel(writer, sheet_name='全PT企業集計', index=False)
+                                _apply_excel_table(writer.sheets['全PT企業集計'], "TableAllCompanies")
 
                                 if self_exchange_clean is not None and not self_exchange_clean.empty:
                                     self_exchange_clean.to_excel(writer, sheet_name='自社交換分', index=False)
+                                    _apply_excel_table(writer.sheets['自社交換分'], "TableSelfExchange")
 
                             all_companies_excel.seek(0)
-                            zip_file.writestr("全企業_集計結果.xlsx", all_companies_excel.getvalue())
+                            zip_file.writestr(f"全企業_集計結果_{today_str}.xlsx", all_companies_excel.getvalue())
                             progress_bar.progress(1 / total)
 
                             # 各企業ごとに1つのExcelファイルを作成
@@ -254,18 +258,21 @@ def main():
 
                                 with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
                                     data.to_excel(writer, sheet_name='集計結果', index=False)
+                                    _apply_excel_table(writer.sheets['集計結果'], f"TableSummary{idx}")
 
                                     company_raw = df_clean[df_clean['user_company(所属)'] == company].copy()
                                     company_raw.to_excel(writer, sheet_name='生データ', index=False)
+                                    _apply_excel_table(writer.sheets['生データ'], f"TableRaw{idx}")
 
                                     if self_exchange_clean is not None and not self_exchange_clean.empty:
                                         company_self_exchange = self_exchange_clean[self_exchange_clean['user_company(所属)'] == company].copy()
                                         if not company_self_exchange.empty:
                                             company_self_exchange.to_excel(writer, sheet_name='自社交換分', index=False)
+                                            _apply_excel_table(writer.sheets['自社交換分'], f"TableSelf{idx}")
 
                                 safe_company_name = company.replace('/', '_').replace('\\', '_')
                                 zip_file.writestr(
-                                    f"{safe_company_name}_集計結果_生データ.xlsx",
+                                    f"{safe_company_name}_集計結果_{today_str}.xlsx",
                                     excel_buffer.getvalue()
                                 )
 
