@@ -64,18 +64,39 @@ def _apply_excel_table(ws, table_name: str, style: str = "TableStyleMedium9"):
     ws.add_table(tbl)
 
 
-def _add_pivot_sheet(writer, df_pivot: pd.DataFrame, e_col_name: str, table_name: str = "PivotTable1"):
-    """bike_company × 自転車メーカー名 のクロス集計シートを追加する"""
+def _add_pivot_sheet(writer, df_pivot: pd.DataFrame, e_col_name: str,
+                     table_name: str = "PivotTable1", self_exc_df: pd.DataFrame = None):
+    """bike_company × 自転車メーカー名 のクロス集計シートを追加する。
+    self_exc_df が指定された場合は '交換種別' 行を追加して自社交換分も表示する。
+    """
     maker_col = '自転車メーカー名'
     if e_col_name not in df_pivot.columns or maker_col not in df_pivot.columns or df_pivot.empty:
         return
-    pivot = pd.crosstab(
-        df_pivot[e_col_name],
-        df_pivot[maker_col],
-        margins=True,
-        margins_name='合計'
-    )
-    pivot.index.name = e_col_name
+
+    has_self = self_exc_df is not None and not self_exc_df.empty and maker_col in self_exc_df.columns
+
+    if has_self:
+        normal = df_pivot[[e_col_name, maker_col]].copy()
+        normal['交換種別'] = '通常'
+        self_part = self_exc_df[[e_col_name, maker_col]].copy()
+        self_part['交換種別'] = '自社交換'
+        combined = pd.concat([normal, self_part], ignore_index=True)
+        pivot = pd.crosstab(
+            [combined['交換種別'], combined[e_col_name]],
+            combined[maker_col],
+            margins=True,
+            margins_name='合計'
+        )
+        pivot.index.names = ['交換種別', e_col_name]
+    else:
+        pivot = pd.crosstab(
+            df_pivot[e_col_name],
+            df_pivot[maker_col],
+            margins=True,
+            margins_name='合計'
+        )
+        pivot.index.name = e_col_name
+
     pivot = pivot.reset_index()
     pivot.to_excel(writer, sheet_name='ピボット', index=False)
     ws = writer.sheets['ピボット']
@@ -314,7 +335,8 @@ def main():
                                             self_exc_clean = self_exc.drop(columns=exclude, errors='ignore')
                                             self_exc_clean.to_excel(writer, sheet_name='自社交換分', index=False)
                                             _apply_excel_table(writer.sheets['自社交換分'], f"TableSelf{idx}")
-                                        _add_pivot_sheet(writer, non_self_clean, e_col_name, f"PivotTable{idx}")
+                                        _add_pivot_sheet(writer, non_self_clean, e_col_name, f"PivotTable{idx}",
+                                                         self_exc_df=self_exc_clean if not self_exc.empty else None)
                                     else:
                                         company_raw = df_clean_bike[df_clean_bike[e_col_name] == bike_company].copy()
                                         company_raw.to_excel(writer, sheet_name='ローデータ', index=False)
