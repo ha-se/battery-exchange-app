@@ -319,24 +319,29 @@ def main():
                                 excel_buf = io.BytesIO()
                                 with pd.ExcelWriter(excel_buf, engine='openpyxl') as writer:
                                     if bike_company in SELF_EXCHANGE_MAPPING:
-                                        # 自社交換分を別シートに分離
-                                        company_df_orig = df[df[e_col_name] == bike_company].copy()
-                                        exclude = [col for col in TEMP_COLS + BIKE_COMPANY_EXCLUDE_COLS if col in company_df_orig.columns]
-                                        if 'is_self_exchange' in company_df_orig.columns:
-                                            self_exc = company_df_orig[company_df_orig['is_self_exchange'] == True].copy()
-                                            non_self = company_df_orig[company_df_orig['is_self_exchange'] == False].copy()
+                                        # session_stateの自社交換分データを使って分離
+                                        self_exchange_all = st.session_state.get('self_exchange_df', pd.DataFrame())
+                                        if not self_exchange_all.empty and e_col_name in self_exchange_all.columns:
+                                            self_exc_clean = self_exchange_all[
+                                                self_exchange_all[e_col_name] == bike_company
+                                            ].copy()
+                                            self_exc_clean = self_exc_clean.drop(
+                                                columns=[c for c in TEMP_COLS + BIKE_COMPANY_EXCLUDE_COLS if c in self_exc_clean.columns],
+                                                errors='ignore'
+                                            )
+                                            # 非自社交換分 = 全行からインデックスで自社交換行を除外
+                                            all_company = df_clean_bike[df_clean_bike[e_col_name] == bike_company]
+                                            non_self_clean = all_company.drop(index=self_exc_clean.index, errors='ignore')
                                         else:
-                                            self_exc = pd.DataFrame()
-                                            non_self = company_df_orig
-                                        non_self_clean = non_self.drop(columns=exclude, errors='ignore')
+                                            self_exc_clean = pd.DataFrame()
+                                            non_self_clean = df_clean_bike[df_clean_bike[e_col_name] == bike_company].copy()
                                         non_self_clean.to_excel(writer, sheet_name='ローデータ', index=False)
                                         _apply_excel_table(writer.sheets['ローデータ'], f"TableRaw{idx}")
-                                        if not self_exc.empty:
-                                            self_exc_clean = self_exc.drop(columns=exclude, errors='ignore')
+                                        if not self_exc_clean.empty:
                                             self_exc_clean.to_excel(writer, sheet_name='自社交換分', index=False)
                                             _apply_excel_table(writer.sheets['自社交換分'], f"TableSelf{idx}")
                                         _add_pivot_sheet(writer, non_self_clean, e_col_name, f"PivotTable{idx}",
-                                                         self_exc_df=self_exc_clean if not self_exc.empty else None)
+                                                         self_exc_df=self_exc_clean if not self_exc_clean.empty else None)
                                     else:
                                         company_raw = df_clean_bike[df_clean_bike[e_col_name] == bike_company].copy()
                                         company_raw.to_excel(writer, sheet_name='ローデータ', index=False)
