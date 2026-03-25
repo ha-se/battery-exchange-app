@@ -263,24 +263,117 @@ def check_battery_standard(row):
     else:
         return None
 
-def aggregate_by_company_and_maker(df: pd.DataFrame) -> Tuple[Dict[str, pd.DataFrame], pd.DataFrame]:
+def _aggregate_core(df_for_aggregation: pd.DataFrame, group_col: str) -> Dict[str, pd.DataFrame]:
+    aggregated_data = {}
+    normalized_col = '_group_normalized'
+    
+    df_temp = df_for_aggregation.copy()
+    df_temp[normalized_col] = df_temp[group_col].astype(str).str.lower().str.strip()
+
+    name_mapping = {}
+    for orig_name in df_temp[group_col].dropna().unique():
+        normalized = str(orig_name).lower().strip()
+        if normalized not in name_mapping:
+            name_mapping[normalized] = orig_name
+
+    groups_normalized = df_temp[normalized_col].dropna().unique()
+    groups_normalized = [c for c in groups_normalized if c != 'nan']
+
+    user_col = 'user_name'
+    maker_col = '自転車メーカー名'
+    makers = ['Panasonic', 'YAMAHA', 'DBS', 'glafit', 'シナネンサイクル', 'KUROAD']
+
+    for group_normalized in groups_normalized:
+        display_name = name_mapping.get(group_normalized, group_normalized)
+        group_df = df_temp[df_temp[normalized_col] == group_normalized]
+        
+        result_data = []
+        for user in group_df[user_col].dropna().unique():
+            user_df = group_df[group_df[user_col] == user]
+            row_data = {'user_name': user}
+            
+            user_df_no_dup = user_df[user_df['is_duplicate'] == False]
+            user_df_dup = user_df[user_df['is_duplicate'] == True]
+            
+            total = 0
+            total_duplicates = 0
+            total_kijun_nai = 0
+            total_kijun_gai = 0
+            total_kijun_nashi = 0
+
+            for maker in makers:
+                maker_df = user_df_no_dup[user_df_no_dup[maker_col] == maker]
+                maker_dup_count = len(user_df_dup[user_df_dup[maker_col] == maker])
+
+                kijun_nai = len(maker_df[maker_df['基準判定'] == '基準内'])
+                kijun_gai = len(maker_df[maker_df['基準判定'] == '基準外'])
+                kijun_nashi = len(maker_df[maker_df['基準判定'].isna() | (maker_df['基準判定'] == '')])
+                maker_total = len(maker_df)
+
+                row_data[f'{maker}_基準内'] = kijun_nai
+                row_data[f'{maker}_基準外'] = kijun_gai
+                row_data[f'{maker}_合計'] = maker_total
+                row_data[f'{maker}_重複除外数'] = maker_dup_count
+
+                total += maker_total
+                total_duplicates += maker_dup_count
+                total_kijun_nai += kijun_nai
+                total_kijun_gai += kijun_gai
+                total_kijun_nashi += kijun_nashi
+
+            row_data['総合計'] = total
+            row_data['総重複除外数'] = total_duplicates
+            row_data['全メーカー_基準内'] = total_kijun_nai
+            row_data['全メーカー_基準外'] = total_kijun_gai
+            row_data['全メーカー_判定なし'] = total_kijun_nashi
+            row_data['検証_基準内+判定なし'] = total_kijun_nai + total_kijun_nashi
+            result_data.append(row_data)
+        
+        result_df = pd.DataFrame(result_data)
+        
+        total_row = {'user_name': '合計'}
+        for col in result_df.columns:
+            if col != 'user_name':
+                total_row[col] = result_df[col].sum()
+        
+        result_df = pd.concat([result_df, pd.DataFrame([total_row])], ignore_index=True)
+        
+        ordered_columns = ['user_name']
+        for maker in makers:
+            if f'{maker}_基準内' in result_df.columns:
+                ordered_columns.extend([
+                    f'{maker}_基準内', 
+                    f'{maker}_基準外', 
+                    f'{maker}_合計',
+                    f'{maker}_重複除外数'
+                ])
+        ordered_columns.extend([
+            '総合計', '総重複除外数',
+            '全メーカー_基準内', '全メーカー_基準外', '全メーカー_判定なし', '検証_基準内+判定なし'
+        ])
+        
+        existing_columns = [col for col in ordered_columns if col in result_df.columns]
+        result_df = result_df[existing_columns]
+
+        aggregated_data[display_name] = result_df
+
+    return aggregated_data
+
+def aggregate_by_company_and_maker(df: pd.DataFrame) -> Tuple[Dict[str, pd.DataFrame], Dict[str, pd.DataFrame], pd.DataFrame]:
     """
     PT企業毎に、user_nameと自転車メーカー別の集計を行う
     基準内/基準外、重複除外も含めて集計
     自社交換分（E列とV列の特定組み合わせ）は除外し、別途返す
+    また、E列(bike_company等)毎の集計も行う
 
     Returns:
-        tuple: (集計結果Dict, 自社交換分DataFrame)
+        tuple: (集計結果Dict, E列集計結果Dict, 自社交換分DataFrame)
             - 集計結果Dict: PT企業名をキー、集計結果DataFrameを値とする辞書
+            - E列集計結果Dict: E列(bike_company)をキー、集計結果DataFrameを値とする辞書
             - 自社交換分DataFrame: 自社交換分のレコード
     """
     company_col = 'user_company(所属)'
-    user_col = 'user_name'
-    maker_col = '自転車メーカー名'
 
-    # 企業名の正規化用列を作成（大文字/小文字を統一）
-    company_col_normalized = '_company_normalized'
-    
     # 重複検出を実行
     df_with_standard = detect_duplicates(df)
 
@@ -288,21 +381,10 @@ def aggregate_by_company_and_maker(df: pd.DataFrame) -> Tuple[Dict[str, pd.DataF
     if hasattr(df, 'attrs'):
         df_with_standard.attrs.update(df.attrs)
 
-    # 企業名の正規化列を追加（大文字/小文字を統一して比較用に使用）
-    df_with_standard[company_col_normalized] = df_with_standard[company_col].astype(str).str.lower().str.strip()
-
-    # 元の企業名と正規化した企業名のマッピングを作成（表示用に元の名前を保持）
-    company_name_mapping = {}
-    for orig_name in df_with_standard[company_col].dropna().unique():
-        normalized = str(orig_name).lower().strip()
-        if normalized not in company_name_mapping:
-            company_name_mapping[normalized] = orig_name
-
     # 基準判定列を追加
     df_with_standard['基準判定'] = df_with_standard.apply(check_battery_standard, axis=1)
     
     # 自社交換分を判定（is_self_exchange列を追加）
-    # より効率的にベクトル化して処理
     df_with_standard['is_self_exchange'] = False
     
     # E列とV列の列名を取得
@@ -325,7 +407,6 @@ def aggregate_by_company_and_maker(df: pd.DataFrame) -> Tuple[Dict[str, pd.DataF
         e_values = df_with_standard[e_col_name].astype(str).str.strip()
         v_values = df_with_standard[v_col_name].astype(str).str.strip()
         
-        # 条件: V列が対象PT企業で、かつE列とV列の組み合わせが自社交換分
         mask = v_values.isin(target_pt_companies) & e_values.isin(self_exchange_mapping.keys())
         for e_str, v_expected in self_exchange_mapping.items():
             df_with_standard.loc[mask & (e_values == e_str) & (v_values == v_expected), 'is_self_exchange'] = True
@@ -334,113 +415,15 @@ def aggregate_by_company_and_maker(df: pd.DataFrame) -> Tuple[Dict[str, pd.DataF
     self_exchange_df = df_with_standard[df_with_standard['is_self_exchange'] == True].copy()
     df_for_aggregation = df_with_standard[df_with_standard['is_self_exchange'] == False].copy()
     
-    # PT企業毎に集計（自社交換分を除外したデータで集計）
-    aggregated_data = {}
+    # PT企業毎に集計
+    aggregated_data = _aggregate_core(df_for_aggregation, company_col)
+    
+    # E列(bike_company)毎に集計
+    aggregated_by_bike = {}
+    if e_col_name and e_col_name in df_for_aggregation.columns:
+        aggregated_by_bike = _aggregate_core(df_for_aggregation, e_col_name)
 
-    # 正規化した企業名でユニークなリストを取得
-    companies_normalized = df_for_aggregation[company_col_normalized].dropna().unique()
-    # 'nan'文字列を除外
-    companies_normalized = [c for c in companies_normalized if c != 'nan']
-
-    for i, company_normalized in enumerate(companies_normalized):
-        # 表示用の企業名を取得（マッピングから、なければ正規化名を使用）
-        company_display = company_name_mapping.get(company_normalized, company_normalized)
-
-        # 該当企業のデータを抽出（正規化した企業名で比較）
-        company_df = df_for_aggregation[df_for_aggregation[company_col_normalized] == company_normalized]
-        
-        # 各メーカーの結果を格納する辞書
-        result_data = []
-        
-        # ユーザー毎に集計
-        for user in company_df[user_col].dropna().unique():
-            user_df = company_df[company_df[user_col] == user]
-            row_data = {'user_name': user}
-            
-            # 重複を除外したデータ
-            user_df_no_dup = user_df[user_df['is_duplicate'] == False]
-            # 重複データ
-            user_df_dup = user_df[user_df['is_duplicate'] == True]
-            
-            # 各メーカーについて、基準内/基準外を集計
-            makers = ['Panasonic', 'YAMAHA', 'DBS', 'glafit', 'シナネンサイクル', 'KUROAD']
-            total = 0
-            total_duplicates = 0
-            total_kijun_nai = 0  # 全メーカー合計：基準内
-            total_kijun_gai = 0  # 全メーカー合計：基準外
-            total_kijun_nashi = 0  # 全メーカー合計：基準判定なし
-
-            for maker in makers:
-                # 重複除外データで集計（重複は含まない）
-                maker_df = user_df_no_dup[user_df_no_dup[maker_col] == maker]
-                # 重複データの件数（参考値）
-                maker_dup_count = len(user_df_dup[user_df_dup[maker_col] == maker])
-
-                # 基準内の件数（重複除外後）
-                kijun_nai = len(maker_df[maker_df['基準判定'] == '基準内'])
-                # 基準外の件数（重複除外後）
-                kijun_gai = len(maker_df[maker_df['基準判定'] == '基準外'])
-                # 基準判定なしの件数（重複除外後）
-                kijun_nashi = len(maker_df[maker_df['基準判定'].isna() | (maker_df['基準判定'] == '')])
-                # 合計（重複除外後、基準判定がNoneの場合も含む）
-                maker_total = len(maker_df)
-
-                # 検証: 基準内 + 基準外 + 基準判定なし = 合計
-                # maker_total = kijun_nai + kijun_gai + kijun_nashi
-
-                row_data[f'{maker}_基準内'] = kijun_nai
-                row_data[f'{maker}_基準外'] = kijun_gai
-                row_data[f'{maker}_合計'] = maker_total
-                row_data[f'{maker}_重複除外数'] = maker_dup_count
-
-                total += maker_total
-                total_duplicates += maker_dup_count
-                total_kijun_nai += kijun_nai
-                total_kijun_gai += kijun_gai
-                total_kijun_nashi += kijun_nashi
-
-            row_data['総合計'] = total
-            row_data['総重複除外数'] = total_duplicates
-            # 検証用：全メーカー合計の基準内・基準外・判定なし
-            row_data['全メーカー_基準内'] = total_kijun_nai
-            row_data['全メーカー_基準外'] = total_kijun_gai
-            row_data['全メーカー_判定なし'] = total_kijun_nashi
-            row_data['検証_基準内+判定なし'] = total_kijun_nai + total_kijun_nashi
-            result_data.append(row_data)
-        
-        # DataFrameに変換
-        result_df = pd.DataFrame(result_data)
-        
-        # 合計行を追加
-        total_row = {'user_name': '合計'}
-        for col in result_df.columns:
-            if col != 'user_name':
-                total_row[col] = result_df[col].sum()
-        
-        result_df = pd.concat([result_df, pd.DataFrame([total_row])], ignore_index=True)
-        
-        # 列の順序を整理
-        ordered_columns = ['user_name']
-        for maker in makers:
-            if f'{maker}_基準内' in result_df.columns:
-                ordered_columns.extend([
-                    f'{maker}_基準内', 
-                    f'{maker}_基準外', 
-                    f'{maker}_合計',
-                    f'{maker}_重複除外数'
-                ])
-        ordered_columns.extend([
-            '総合計', '総重複除外数',
-            '全メーカー_基準内', '全メーカー_基準外', '全メーカー_判定なし', '検証_基準内+判定なし'
-        ])
-        
-        # 存在する列のみを選択
-        existing_columns = [col for col in ordered_columns if col in result_df.columns]
-        result_df = result_df[existing_columns]
-
-        aggregated_data[company_display] = result_df
-
-    return aggregated_data, self_exchange_df
+    return aggregated_data, aggregated_by_bike, self_exchange_df
 
 def main():
     st.title("🔋 バッテリー交換実績集計アプリ")
@@ -544,10 +527,11 @@ def main():
                     progress_bar.progress(30, text="重複チェック実行中...")
                     
                     # 集計実行（重複検出を含む、自社交換分を除外）
-                    aggregated_data, self_exchange_df = aggregate_by_company_and_maker(df)
+                    aggregated_data, aggregated_by_bike, self_exchange_df = aggregate_by_company_and_maker(df)
                     
                     progress_bar.progress(90, text="集計結果を準備中...")
                     st.session_state['aggregated_data'] = aggregated_data
+                    st.session_state['aggregated_by_bike'] = aggregated_by_bike
                     st.session_state['self_exchange_df'] = self_exchange_df
                     
                     progress_bar.progress(100, text="完了！")
@@ -656,13 +640,27 @@ def main():
                                 
                                 progress_bar.progress((idx + 2) / total)  # +2は全企業ファイル分とインデックス調整
                             
+                            # bike_company毎の集計エクセルを作成 (各bike_companyをシートに)
+                            if 'aggregated_by_bike' in st.session_state and st.session_state['aggregated_by_bike']:
+                                bike_excel_buffer = io.BytesIO()
+                                with pd.ExcelWriter(bike_excel_buffer, engine='openpyxl') as writer:
+                                    for bike_company, data in st.session_state['aggregated_by_bike'].items():
+                                        # シート名は31文字制限などを考慮
+                                        safe_sheet_name = str(bike_company)[:31].replace('/', '_').replace('\\', '_').replace('[', '').replace(']', '').replace('*', '').replace('?', '').replace(':', '')
+                                        if not safe_sheet_name:
+                                            safe_sheet_name = "不明"
+                                        data.to_excel(writer, sheet_name=safe_sheet_name, index=False)
+                                
+                                bike_excel_buffer.seek(0)
+                                zip_file.writestr("bike_company毎_集計結果.xlsx", bike_excel_buffer.getvalue())
+
                             progress_bar.empty()
                         
                         zip_buffer.seek(0)
                         st.session_state['all_excel_data'] = zip_buffer.getvalue()
                         st.session_state['all_excel_filename'] = "全PT企業_集計結果_生データ.zip"
                         st.session_state['all_excel_mime'] = "application/zip"
-                        st.success(f"✅ ZIPファイルの準備完了！（全企業_集計結果.xlsx + {len(aggregated_data)}社のExcelファイル）")
+                        st.success(f"✅ ZIPファイルの準備完了！（全企業_集計結果.xlsx + {len(aggregated_data)}社のExcelファイル + bike_company毎_集計結果.xlsx）")
                 
                 # ダウンロードボタンを表示
                 if 'all_excel_data' in st.session_state:
