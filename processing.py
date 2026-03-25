@@ -2,6 +2,7 @@
 データ処理モジュール
 重複検出・バッテリー基準判定・集計処理
 """
+import numpy as np
 import pandas as pd
 from typing import Dict, Optional, Tuple
 
@@ -48,15 +49,7 @@ def detect_duplicates(df: pd.DataFrame) -> pd.DataFrame:
 
 def check_battery_standard(row) -> Optional[str]:
     """
-    バッテリー残量が基準外かどうかを判定
-
-    基準:
-    - Panasonic: 25%以上が基準外
-    - YAMAHA: 70%以上が基準外
-    - DBS: 50%以上が基準外（ただし100%は基準内）
-    - glafit: 50%以上が基準外
-    - シナネンサイクル: 40%以上が基準外
-    - KUROAD: 基準判定なし
+    バッテリー残量が基準外かどうかを判定（行単位・後方互換用）
 
     Returns:
         '基準内', '基準外', または None
@@ -83,18 +76,46 @@ def check_battery_standard(row) -> Optional[str]:
         return None
 
 
+def check_battery_standard_vectorized(df: pd.DataFrame) -> pd.Series:
+    """
+    バッテリー残量が基準外かどうかをベクトル演算で一括判定
+    apply(axis=1) の数十倍高速
+    """
+    maker = df['自転車メーカー名']
+    battery = df['battery_remaining']
+
+    result = pd.Series(None, index=df.index, dtype=object)
+
+    m = (maker == 'Panasonic') & battery.notna()
+    result[m] = np.where(battery[m] >= 25, '基準外', '基準内')
+
+    m = (maker == 'YAMAHA') & battery.notna()
+    result[m] = np.where(battery[m] >= 70, '基準外', '基準内')
+
+    m = (maker == 'DBS') & battery.notna()
+    result[m] = np.where(
+        battery[m] == 100, '基準内',
+        np.where(battery[m] >= 50, '基準外', '基準内')
+    )
+
+    m = (maker == 'glafit') & battery.notna()
+    result[m] = np.where(battery[m] >= 50, '基準外', '基準内')
+
+    m = (maker == 'シナネンサイクル') & battery.notna()
+    result[m] = np.where(battery[m] >= 40, '基準外', '基準内')
+
+    return result
+
+
 def _aggregate_core(df_for_aggregation: pd.DataFrame, group_col: str) -> Dict[str, pd.DataFrame]:
     """
     指定列でグループ化して集計を行うコア処理
 
-    Args:
-        df_for_aggregation: 集計対象DataFrame（is_duplicate・基準判定列が必要）
-        group_col: グループ化する列名
-
-    Returns:
-        グループ名をキー、集計結果DataFrameを値とする辞書
+    最適化: 事前にgroupbyで全集計し、辞書引きで各セルを埋める
+    （元の三重ループでの都度DataFrameフィルタリングを廃止）
     """
-    aggregated_data = {}
+    maker_col = '自転車メーカー名'
+    user_col = 'user_name'
     normalized_col = '_group_normalized'
 
     df_temp = df_for_aggregation.copy()
@@ -106,54 +127,80 @@ def _aggregate_core(df_for_aggregation: pd.DataFrame, group_col: str) -> Dict[st
         if normalized not in name_mapping:
             name_mapping[normalized] = orig_name
 
-    groups_normalized = df_temp[normalized_col].dropna().unique()
-    groups_normalized = [c for c in groups_normalized if c != 'nan']
+    valid_groups = [g for g in df_temp[normalized_col].dropna().unique() if g != 'nan']
+    if not valid_groups:
+        return {}
 
-    user_col = 'user_name'
-    maker_col = '自転車メーカー名'
+    # MAKERSのみに絞り込み
+    df_makers = df_temp[df_temp[maker_col].isin(MAKERS)].copy()
+    # NaN・空文字の基準判定を '_なし' に正規化
+    df_makers['_kijun'] = df_makers['基準判定'].fillna('_なし').replace('', '_なし')
 
-    for group_normalized in groups_normalized:
-        display_name = name_mapping.get(group_normalized, group_normalized)
-        group_df = df_temp[df_temp[normalized_col] == group_normalized]
+    df_no_dup = df_makers[~df_makers['is_duplicate']]
+    df_dup = df_makers[df_makers['is_duplicate']]
+
+    # 全データを一括groupby（ループ内でのフィルタリングを廃止）
+    no_dup_agg = (
+        df_no_dup.groupby([normalized_col, user_col, maker_col, '_kijun'])
+        .size()
+        .reset_index(name='cnt')
+    )
+    dup_agg = (
+        df_dup.groupby([normalized_col, user_col, maker_col])
+        .size()
+        .reset_index(name='dup_cnt')
+    )
+
+    # O(1) 辞書引き用に変換
+    no_dup_lookup: dict = no_dup_agg.set_index(
+        [normalized_col, user_col, maker_col, '_kijun']
+    )['cnt'].to_dict()
+    dup_lookup: dict = dup_agg.set_index(
+        [normalized_col, user_col, maker_col]
+    )['dup_cnt'].to_dict()
+
+    # グループごとのユーザー一覧を事前取得
+    users_per_group: dict = (
+        df_temp[df_temp[normalized_col].isin(valid_groups)]
+        .groupby(normalized_col)[user_col]
+        .unique()
+        .to_dict()
+    )
+
+    aggregated_data = {}
+
+    for group_norm in valid_groups:
+        display_name = name_mapping.get(group_norm, group_norm)
+        group_users = [u for u in users_per_group.get(group_norm, []) if pd.notna(u)]
 
         result_data = []
-        for user in group_df[user_col].dropna().unique():
-            user_df = group_df[group_df[user_col] == user]
+        for user in group_users:
             row_data = {'user_name': user}
-
-            user_df_no_dup = user_df[user_df['is_duplicate'] == False]
-            user_df_dup = user_df[user_df['is_duplicate'] == True]
-
-            total = 0
-            total_duplicates = 0
-            total_kijun_nai = 0
-            total_kijun_gai = 0
-            total_kijun_nashi = 0
+            total = total_dup = total_kijun_nai = total_kijun_gai = total_kijun_nashi = 0
 
             for maker in MAKERS:
-                maker_df = user_df_no_dup[user_df_no_dup[maker_col] == maker]
-                maker_dup_count = len(user_df_dup[user_df_dup[maker_col] == maker])
+                key = (group_norm, user, maker)
+                kijun_nai   = no_dup_lookup.get((*key, '基準内'), 0)
+                kijun_gai   = no_dup_lookup.get((*key, '基準外'), 0)
+                kijun_nashi = no_dup_lookup.get((*key, '_なし'),  0)
+                maker_total = kijun_nai + kijun_gai + kijun_nashi
+                maker_dup   = dup_lookup.get(key, 0)
 
-                kijun_nai = len(maker_df[maker_df['基準判定'] == '基準内'])
-                kijun_gai = len(maker_df[maker_df['基準判定'] == '基準外'])
-                kijun_nashi = len(maker_df[maker_df['基準判定'].isna() | (maker_df['基準判定'] == '')])
-                maker_total = len(maker_df)
+                row_data[f'{maker}_基準内']    = kijun_nai
+                row_data[f'{maker}_基準外']    = kijun_gai
+                row_data[f'{maker}_合計']      = maker_total
+                row_data[f'{maker}_重複除外数'] = maker_dup
 
-                row_data[f'{maker}_基準内'] = kijun_nai
-                row_data[f'{maker}_基準外'] = kijun_gai
-                row_data[f'{maker}_合計'] = maker_total
-                row_data[f'{maker}_重複除外数'] = maker_dup_count
-
-                total += maker_total
-                total_duplicates += maker_dup_count
-                total_kijun_nai += kijun_nai
-                total_kijun_gai += kijun_gai
+                total            += maker_total
+                total_dup        += maker_dup
+                total_kijun_nai  += kijun_nai
+                total_kijun_gai  += kijun_gai
                 total_kijun_nashi += kijun_nashi
 
-            row_data['総合計'] = total
-            row_data['総重複除外数'] = total_duplicates
-            row_data['全メーカー_基準内'] = total_kijun_nai
-            row_data['全メーカー_基準外'] = total_kijun_gai
+            row_data['総合計']            = total
+            row_data['総重複除外数']       = total_dup
+            row_data['全メーカー_基準内']   = total_kijun_nai
+            row_data['全メーカー_基準外']   = total_kijun_gai
             row_data['全メーカー_判定なし'] = total_kijun_nashi
             row_data['検証_基準内+判定なし'] = total_kijun_nai + total_kijun_nashi
             result_data.append(row_data)
@@ -206,7 +253,8 @@ def aggregate_by_company_and_maker(df: pd.DataFrame) -> Tuple[Dict[str, pd.DataF
     if hasattr(df, 'attrs'):
         df_with_standard.attrs.update(df.attrs)
 
-    df_with_standard['基準判定'] = df_with_standard.apply(check_battery_standard, axis=1)
+    # apply(axis=1) → ベクトル演算に変更（大幅高速化）
+    df_with_standard['基準判定'] = check_battery_standard_vectorized(df_with_standard)
 
     df_with_standard['is_self_exchange'] = False
 
