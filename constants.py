@@ -21,3 +21,8 @@ TEMP_COLS = [
     'is_duplicate', '基準判定', 'prev_code', 'prev_date', 'time_diff',
     'is_self_exchange', '_group_normalized'
 ]
+
+# bike_company別ローデータExcel出力時に削除する列（W/X/Z/AA/AB列）
+BIKE_COMPANY_EXCLUDE_COLS = [
+    '一致or請求', '請求可否', 'BT残量区分', '重複確認', '対象BT残量'
+]

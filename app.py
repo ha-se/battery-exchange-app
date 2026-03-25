@@ -11,7 +11,7 @@ import zipfile
 
 
 
-from constants import TEMP_COLS
+from constants import TEMP_COLS, BIKE_COMPANY_EXCLUDE_COLS
 from processing import aggregate_by_company_and_maker
 
 # ページ設定
@@ -86,7 +86,7 @@ def main():
 
         # バージョン情報（デバッグ用）
         st.markdown("---")
-        st.caption("Version: 2026-03-25-v11 (bike_company個別ダウンロード対応)")
+        st.caption("Version: 2026-03-25-v12 (bike_company選択ダウンロード対応)")
 
     # メインエリア
     if uploaded_file is not None:
@@ -236,7 +236,7 @@ def main():
 
                 st.markdown("---")
                 st.subheader("🚲 bike_company毎のローデータをダウンロード")
-                st.info("💡 各bike_companyのローデータを個別にダウンロードできます")
+                st.info("💡 ダウンロードしたいbike_companyを選択してExcelを生成できます")
 
                 e_col_name = df.attrs.get('e_column_name', None) if hasattr(df, 'attrs') else None
                 if not e_col_name and len(df.columns) > 4:
@@ -244,14 +244,23 @@ def main():
 
                 if e_col_name and e_col_name in df.columns:
                     df_clean_bike = df.copy()
-                    df_clean_bike = df_clean_bike.drop(columns=[col for col in TEMP_COLS if col in df_clean_bike.columns], errors='ignore')
+                    exclude_cols = [col for col in TEMP_COLS + BIKE_COMPANY_EXCLUDE_COLS if col in df_clean_bike.columns]
+                    df_clean_bike = df_clean_bike.drop(columns=exclude_cols, errors='ignore')
 
-                    bike_companies = sorted(df_clean_bike[e_col_name].dropna().unique())
+                    bike_companies = sorted(df_clean_bike[e_col_name].dropna().unique().tolist())
 
-                    if st.button("📊 全bike_company Excelを準備", key="prepare_bike_excels"):
-                        with st.spinner(f"{len(bike_companies)}社分のExcelファイルを生成中..."):
+                    selected_bike_companies = st.multiselect(
+                        "ダウンロードするbike_companyを選択",
+                        options=bike_companies,
+                        default=[],
+                        placeholder="会社を選択してください（複数選択可）"
+                    )
+
+                    btn_label = f"📊 選択した{len(selected_bike_companies)}社のExcelを準備" if selected_bike_companies else "📊 Excelを準備（会社を選択してください）"
+                    if st.button(btn_label, key="prepare_bike_excels", disabled=not selected_bike_companies):
+                        with st.spinner(f"{len(selected_bike_companies)}社分のExcelファイルを生成中..."):
                             bike_excel_files = {}
-                            for bike_company in bike_companies:
+                            for bike_company in selected_bike_companies:
                                 company_raw = df_clean_bike[df_clean_bike[e_col_name] == bike_company].copy()
                                 excel_buf = io.BytesIO()
                                 with pd.ExcelWriter(excel_buf, engine='openpyxl') as writer:
@@ -259,9 +268,11 @@ def main():
                                 excel_buf.seek(0)
                                 bike_excel_files[str(bike_company)] = excel_buf.getvalue()
                             st.session_state['bike_excel_files'] = bike_excel_files
-                        st.success(f"✅ {len(bike_companies)}社分のExcelファイルを準備しました")
+                            st.session_state['bike_excel_selected'] = list(selected_bike_companies)
+                        st.success(f"✅ {len(selected_bike_companies)}社分のExcelファイルを準備しました")
 
-                    if 'bike_excel_files' in st.session_state:
+                    if 'bike_excel_files' in st.session_state and st.session_state['bike_excel_files']:
+                        st.caption(f"準備済み: {', '.join(st.session_state.get('bike_excel_selected', []))}")
                         cols = st.columns(3)
                         for i, bike_company in enumerate(sorted(st.session_state['bike_excel_files'].keys())):
                             safe_name = bike_company.replace('/', '_').replace('\\', '_')
