@@ -61,15 +61,19 @@ redirect_uri = "http://localhost:8501" # 実際のURLに合わせて変更
                     "https://www.googleapis.com/oauth2/v2/userinfo",
                     headers={"Authorization": f"Bearer {access_token}"}
                 )
-                user_info = user_info_response.json()
                 
-                # メールアドレスをセッションに保存
-                email = user_info.get("email", "Unknown Email")
-                st.session_state["authenticated_user"] = email
-                
-                st.rerun() # リロードしてログイン状態を反映
+                if user_info_response.status_code == 200:
+                    user_info = user_info_response.json()
+                    
+                    # メールアドレスをセッションに保存
+                    email = user_info.get("email", "Unknown Email")
+                    st.session_state["authenticated_user"] = email
+                    
+                    st.rerun() # リロードしてログイン状態を反映
+                else:
+                    st.error(f"ユーザー情報の取得に失敗しました (ステータス {user_info_response.status_code}): {user_info_response.text}")
             else:
-                st.error(f"トークンの取得に失敗しました: {res.text}")
+                st.error(f"トークンの取得に失敗しました (ステータス {res.status_code}): {res.text}")
                 
         except Exception as e:
             st.error(f"認証中にエラーが発生しました: {e}")
