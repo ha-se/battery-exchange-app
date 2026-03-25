@@ -216,13 +216,13 @@ def main():
 
                         # 生データから一時列を削除
                         df_clean = df.copy()
-                        df_clean = df_clean.drop(columns=[col for col in TEMP_COLS if col in df_clean.columns], errors='ignore')
+                        df_clean = df_clean.drop(columns=[col for col in TEMP_COLS + BIKE_COMPANY_EXCLUDE_COLS if col in df_clean.columns], errors='ignore')
 
                         # 自社交換分のデータを準備
                         self_exchange_clean = None
                         if 'self_exchange_df' in st.session_state and not st.session_state['self_exchange_df'].empty:
                             self_exchange_clean = st.session_state['self_exchange_df'].copy()
-                            self_exchange_clean = self_exchange_clean.drop(columns=[col for col in TEMP_COLS if col in self_exchange_clean.columns], errors='ignore')
+                            self_exchange_clean = self_exchange_clean.drop(columns=[col for col in TEMP_COLS + BIKE_COMPANY_EXCLUDE_COLS if col in self_exchange_clean.columns], errors='ignore')
 
                         today_str = pd.Timestamp.now().strftime('%Y%m%d')
 
