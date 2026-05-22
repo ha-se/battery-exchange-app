@@ -57,5 +57,8 @@ data_explorer.py
 test_*.py
 集計結果_*.xlsx
 
+# Jupyter Notebook
+battery_exchange_notebook.ipynb
+
 # Git
 .git/
